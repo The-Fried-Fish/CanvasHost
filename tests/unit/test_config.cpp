@@ -17,6 +17,28 @@
 
 using namespace std::literals;
 
+/**
+ * @brief Keep client-negotiated packet sizes by default while honoring explicit host limits.
+ */
+TEST(StreamPacketSizeConfigTest, LimitsPacketsOnlyWhenExplicitlyConfigured) {
+  const auto original_stream = config::stream;
+  const auto original_modified_settings = config::modified_config_settings;
+  const auto restore = util::fail_guard([&]() {
+    config::stream = original_stream;
+    config::modified_config_settings = original_modified_settings;
+  });
+
+  EXPECT_EQ(config::stream.packetsize, 0);
+  config::apply_config_for_test("");
+  EXPECT_EQ(config::stream.packetsize, 0);
+
+  config::apply_config_for_test("packetsize = 1024\n");
+  EXPECT_EQ(config::stream.packetsize, 1024);
+
+  config::apply_config_for_test("packetsize = 0\n");
+  EXPECT_EQ(config::stream.packetsize, 0);
+}
+
 using NvencPresetNameParam = std::pair<int, std::string_view>;
 
 /**

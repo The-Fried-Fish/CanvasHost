@@ -846,6 +846,7 @@ namespace config {
 
   /**
    * @brief Default stream configuration values used before file and CLI overrides.
+   * @details Preserve the client's requested packet size unless a host limit is explicitly configured.
    */
   stream_t stream {
     10s,  // ping_timeout
@@ -853,7 +854,7 @@ namespace config {
     20,  // fec_percentage
     ENCRYPTION_MODE_OPPORTUNISTIC,  // lan_encryption_mode
     ENCRYPTION_MODE_MANDATORY,  // wan_encryption_mode
-    1024,  // packetsize
+    0,  // packetsize
   };
 
   /**
