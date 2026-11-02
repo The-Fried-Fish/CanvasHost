@@ -476,6 +476,7 @@ namespace platf {
       if ([SCCapture isAvailable]) {
         auto disp = std::make_shared<sc_display_t>();
         disp->display_id = selected_display_id;
+        disp->native_display_id = selected_display_id;
         disp->sc_capture = [[SCCapture alloc] initWithDisplay:selected_display_id frameRate:config.framerate captureAudio:NO];
 
         if (!disp->sc_capture) {
@@ -493,6 +494,7 @@ namespace platf {
     // Fallback: AVFoundation capture backend
     auto disp = std::make_shared<av_display_t>();
     disp->display_id = selected_display_id;
+    disp->native_display_id = selected_display_id;
     disp->av_capture = [[AVVideo alloc] initWithDisplay:selected_display_id frameRate:config.framerate];
 
     if (!disp->av_capture) {

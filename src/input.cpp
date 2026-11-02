@@ -35,6 +35,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "pen_barrel_roll.h"
 #include "platform/common.h"
 #include "platform/virtualhid_input.h"
 #include "thread_pool.h"
@@ -181,6 +182,19 @@ namespace input {
     return sink;
   }
 #endif
+#ifdef SUNSHINE_TESTS
+  /** @brief Optional observer replacing platform pen delivery in protocol tests. */
+  std::function<void(const platf::touch_port_t &, const platf::pen_input_t &)> pen_sink;
+#endif
+
+  /**
+   * @brief Deliver a normalized pen sample to its per-client backend.
+   * @param input Stream owning the tablet.
+   * @param viewport Normalized desktop viewport.
+   * @param pen Normalized pen state.
+   */
+  void emit_pen(const std::shared_ptr<input_t> &input, const platf::touch_port_t &viewport, const platf::pen_input_t &pen);
+
   static std::bitset<platf::MAX_GAMEPADS> gamepadMask {};
 
   /**
@@ -304,6 +318,10 @@ namespace input {
 
     std::list<std::vector<uint8_t>> input_queue;  ///< Validated input packets waiting for processing.
     std::mutex input_queue_lock;  ///< Input queue lock.
+    pen_wire::roll_probe_t pen_roll_probe;  ///< Per-session hardware observations, protected by the queue lock.
+    std::uint64_t input_generation = 0;  ///< Prevent old queued tasks from consuming resumed-session packets.
+    bool input_stopped = false;  ///< Reject stale packets after disconnect until the session resumes.
+    std::chrono::steady_clock::time_point next_invalid_pen_warning {};  ///< Rate limit malformed extension warnings.
 
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
 
@@ -312,6 +330,16 @@ namespace input {
     int32_t accumulated_vscroll_delta;  ///< Accumulated vscroll delta.
     int32_t accumulated_hscroll_delta;  ///< Accumulated hscroll delta.
   };
+
+  void emit_pen(const std::shared_ptr<input_t> &input, const platf::touch_port_t &viewport, const platf::pen_input_t &pen) {
+#ifdef SUNSHINE_TESTS
+    if (pen_sink) {
+      pen_sink(viewport, pen);
+      return;
+    }
+#endif
+    platf::pen_update(input->client_context.get(), viewport, pen);
+  }
 
   /**
    * @brief Hash string-like session identifiers without allocating temporary strings.
@@ -704,6 +732,13 @@ namespace input {
       case SS_PEN_MAGIC:
         print((PSS_PEN_PACKET) payload);
         break;
+      case pen_wire::magic:
+        {
+          auto packet = reinterpret_cast<pen_wire::packet_t *>(payload);
+          print(&packet->pen);
+          BOOST_LOG(debug) << "barrelRoll: " << pen_wire::decode_roll(packet->barrelRoll);
+          break;
+        }
       case SS_CONTROLLER_ARRIVAL_MAGIC:
         print((PSS_CONTROLLER_ARRIVAL_PACKET) payload);
         break;
@@ -1360,6 +1395,7 @@ namespace input {
       static_cast<int>(monitor_logical_h),
       static_cast<int>(monitor_logical_w),
       static_cast<int>(monitor_logical_h),
+      touch_port.native_display_id,
     };
   }
 
@@ -1445,8 +1481,20 @@ namespace input {
    * @brief Called to pass a pen message to the platform backend.
    * @param input The input context pointer.
    * @param packet The pen packet.
+   * @param barrel_roll Resolved independent barrel roll, or unknown for legacy azimuth fallback.
    */
-  void passthrough(std::shared_ptr<input_t> &input, PSS_PEN_PACKET packet) {
+  void passthrough(std::shared_ptr<input_t> &input, PSS_PEN_PACKET packet, std::uint16_t barrel_roll = pen_wire::unknown) {
+#ifdef __APPLE__
+    // Quartz retains the last valid point for events without coordinates.
+    if (packet->eventType == LI_TOUCH_EVENT_CANCEL_ALL || packet->eventType == LI_TOUCH_EVENT_CANCEL || packet->eventType == LI_TOUCH_EVENT_HOVER_LEAVE || packet->eventType == LI_TOUCH_EVENT_BUTTON_ONLY) {
+      platf::pen_input_t pen {};
+      pen.eventType = packet->eventType;
+      pen.toolType = packet->toolType;
+      pen.penButtons = packet->penButtons;
+      emit_pen(input, {}, pen);
+      return;
+    }
+#endif
     const auto pointer_data = prepare_absolute_pointer_data(input, packet);
     if (!pointer_data) {
       return;
@@ -1465,7 +1513,8 @@ namespace input {
       pointer_data->contact_area.second,
     };
 
-    platf::pen_update(input->client_context.get(), pointer_data->touch_port, pen);
+    pen.barrelRoll = barrel_roll == pen_wire::unknown ? pen.rotation : barrel_roll;
+    emit_pen(input, pointer_data->touch_port, pen);
   }
 
   /**
@@ -1752,6 +1801,8 @@ namespace input {
         return validate_fixed_input_packet<SS_TOUCH_PACKET>(packet, declared_size);
       case SS_PEN_MAGIC:
         return validate_fixed_input_packet<SS_PEN_PACKET>(packet, declared_size);
+      case pen_wire::magic:
+        return pen_wire::valid_size(packet.size(), header.size);
       case SS_CONTROLLER_ARRIVAL_MAGIC:
         return validate_fixed_input_packet<SS_CONTROLLER_ARRIVAL_PACKET>(packet, declared_size);
       case SS_CONTROLLER_TOUCH_MAGIC:
@@ -2035,6 +2086,17 @@ namespace input {
         return batch((PSS_TOUCH_PACKET) dest, (PSS_TOUCH_PACKET) src);
       case SS_PEN_MAGIC:
         return batch((PSS_PEN_PACKET) dest, (PSS_PEN_PACKET) src);
+      case pen_wire::magic:
+        {
+          auto dest_pen = reinterpret_cast<pen_wire::packet_t *>(dest);
+          auto src_pen = reinterpret_cast<pen_wire::packet_t *>(src);
+          auto result = batch(&dest_pen->pen, &src_pen->pen);
+          if (result == batch_result_e::batched) {
+            dest_pen->barrelRoll = src_pen->barrelRoll;
+            dest_pen->reserved = src_pen->reserved;
+          }
+          return result;
+        }
       case SS_CONTROLLER_TOUCH_MAGIC:
         return batch((PSS_CONTROLLER_TOUCH_PACKET) dest, (PSS_CONTROLLER_TOUCH_PACKET) src);
       case SS_CONTROLLER_MOTION_MAGIC:
@@ -2274,8 +2336,9 @@ namespace input {
   /**
    * @brief Called on a thread pool thread to process an input message.
    * @param input The input context pointer.
+   * @param generation Session generation captured when the task was queued.
    */
-  void passthrough_next_message(std::shared_ptr<input_t> input) {
+  void passthrough_next_message(std::shared_ptr<input_t> input, std::uint64_t generation) {
     // 'entry' backs the 'payload' pointer, so they must remain in scope together
     std::vector<uint8_t> entry;
     PNV_INPUT_HEADER payload;
@@ -2288,7 +2351,7 @@ namespace input {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
 
       // If all entries have already been processed, nothing to do
-      if (input->input_queue.empty()) {
+      if (input->input_stopped || generation != input->input_generation || input->input_queue.empty()) {
         return;
       }
 
@@ -2364,6 +2427,12 @@ namespace input {
       case SS_PEN_MAGIC:
         passthrough(input, (PSS_PEN_PACKET) payload);
         break;
+      case pen_wire::magic:
+        {
+          auto packet = reinterpret_cast<pen_wire::packet_t *>(payload);
+          passthrough(input, &packet->pen, pen_wire::decode_roll(packet->barrelRoll));
+          break;
+        }
       case SS_CONTROLLER_ARRIVAL_MAGIC:
         passthrough(input, (PSS_CONTROLLER_ARRIVAL_PACKET) payload);
         break;
@@ -2387,6 +2456,18 @@ namespace input {
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data) {
     NV_INPUT_HEADER header {};
     if (!validate_input_packet(input_data, &header)) {
+      if (util::endian::little(header.magic) == pen_wire::magic) {
+        std::lock_guard lock {input->input_queue_lock};
+        const auto now = std::chrono::steady_clock::now();
+        if (now < input->next_invalid_pen_warning) {
+          return;
+        }
+        input->next_invalid_pen_warning = now + 5s;
+        BOOST_LOG(warning) << "Dropping malformed barrel-roll pen packet: declared payload "
+                           << util::endian::big(header.size) << " (expected 36), actual bytes "
+                           << input_data.size() << " (expected 40)";
+        return;
+      }
       if (input_data.size() >= sizeof(header)) {
         BOOST_LOG(warning)
           << "Dropping malformed input packet type ["sv
@@ -2405,9 +2486,23 @@ namespace input {
 
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
+      if (input->input_stopped) {
+        return;
+      }
+      const auto magic = util::endian::little(header.magic);
+      if (magic == SS_PEN_MAGIC) {
+        input->pen_roll_probe.reset();
+      } else if (magic == pen_wire::magic) {
+        auto &packet = *reinterpret_cast<pen_wire::packet_t *>(input_data.data());
+        // Observe every packet before MOVE/HOVER coalescing can discard hardware changes.
+        packet.barrelRoll = util::endian::little(input->pen_roll_probe.select(
+          pen_wire::decode_roll(packet.barrelRoll),
+          pen_wire::decode_roll(packet.pen.rotation)
+        ));
+      }
       input->input_queue.push_back(std::move(input_data));
+      task_pool.push(passthrough_next_message, input, input->input_generation);
     }
-    task_pool.push(passthrough_next_message, input);
   }
 
   /**
@@ -2474,17 +2569,29 @@ namespace input {
     reset_mouse_buttons();
     reset_keyboard_keys();
     reset_gamepads(input);
+#ifdef __APPLE__
+    // Retained client contexts survive disconnect, so their pen must explicitly leave range.
+    platf::pen_input_t pen {};
+    pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
+    emit_pen(input, {}, pen);
+#endif
   }
 
   /**
    * @brief Reset the object to its initial empty state.
    */
   void reset(std::shared_ptr<input_t> &input) {
+    {
+      std::lock_guard lock {input->input_queue_lock};
+      input->input_stopped = true;
+      ++input->input_generation;
+      input->input_queue.clear();
+      input->pen_roll_probe.reset();
+      // Queue cleanup before any resumed-session message can be scheduled.
+      task_pool.push(reset_input_state, input);
+    }
     task_pool.cancel(key_press_repeat_id);
     task_pool.cancel(input->mouse_left_button_timeout);
-
-    // Ensure input is synchronous, by using the task_pool
-    task_pool.push(reset_input_state, input);
   }
 
   void terminate_gamepads() {
@@ -2596,6 +2703,10 @@ namespace input {
       }
     }
 
+    {
+      std::lock_guard lock {input->input_queue_lock};
+      input->input_stopped = false;
+    }
     if (resumed) {
       dispatch_input_task([input, mail = std::move(mail)]() {
         rebind_input(input, mail);
@@ -2657,6 +2768,19 @@ namespace input {
 
     void release_held_keys() {
       reset_keyboard_keys();
+    }
+
+    void set_pen_sink(std::function<void(const platf::touch_port_t &, const platf::pen_input_t &)> sink) {
+      pen_sink = std::move(sink);
+    }
+
+    void process_next_input(const std::shared_ptr<input_t> &input) {
+      std::uint64_t generation;
+      {
+        std::lock_guard lock {input->input_queue_lock};
+        generation = input->input_generation;
+      }
+      passthrough_next_message(input, generation);
     }
 
     bool is_valid_input_packet(std::span<const std::uint8_t> packet) {

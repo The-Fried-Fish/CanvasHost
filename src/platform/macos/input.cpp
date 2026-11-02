@@ -30,7 +30,8 @@ namespace platf {
   }
 
   platform_caps::caps_t get_capabilities() {
-    platform_caps::caps_t caps = 0;
+    // Quartz tablet events support pens without a libvirtualhid pen device.
+    platform_caps::caps_t caps = config::input.mouse && config::input.native_pen_touch ? platform_caps::pen_touch : 0;
     const auto runtime = virtualhid::create_runtime();
     if (!runtime) {
       return caps;
@@ -39,9 +40,6 @@ namespace platf {
     const auto &capabilities = runtime->capabilities();
     if (capabilities.supports_gamepad && virtualhid::configured_gamepad_supports_controller_extensions()) {
       caps |= platform_caps::controller_touch;
-    }
-    if (config::input.native_pen_touch && (capabilities.supports_touchscreen || capabilities.supports_pen_tablet)) {
-      caps |= platform_caps::pen_touch;
     }
 
     return caps;

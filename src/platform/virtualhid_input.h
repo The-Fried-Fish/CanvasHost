@@ -20,7 +20,8 @@
 
 namespace platf::macos {
   class gamepad_device_t;
-}
+  class pen_device_t;
+}  // namespace platf::macos
 
 namespace platf::virtualhid {
 
@@ -73,6 +74,9 @@ namespace platf::virtualhid {
     input_context_t *global = nullptr;  ///< Shared global input context.
     std::unique_ptr<lvh::Touchscreen> touch;  ///< Per-client touchscreen.
     std::unique_ptr<lvh::PenTablet> pen;  ///< Per-client pen tablet.
+#ifdef __APPLE__
+    std::shared_ptr<macos::pen_device_t> macos_pen;  ///< Native Quartz tablet, including independent barrel rotation.
+#endif
     std::set<std::int32_t> active_touches;  ///< Active touchscreen contacts.
     std::set<lvh::PenButton> pressed_pen_buttons;  ///< Active pen tablet buttons.
   };

@@ -63,6 +63,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/macos/capture_guard.mm"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/display.mm"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/pen.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/pen.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/gamepad.m"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/hid_gamepad.m"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/gamepad_bridge.mm"

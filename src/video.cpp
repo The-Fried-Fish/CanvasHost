@@ -2616,6 +2616,7 @@ namespace video {
         config.height,
         display->logical_width,
         display->logical_height,
+        display->native_display_id,
       },
       display->env_width,
       display->env_height,

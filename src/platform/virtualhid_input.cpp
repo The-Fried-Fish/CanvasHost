@@ -24,7 +24,8 @@
 #include "virtualhid_input.h"
 
 #ifdef __APPLE__
-#include "src/platform/macos/smooth_scroll.h"
+  #include "src/platform/macos/pen.h"
+  #include "src/platform/macos/smooth_scroll.h"
 #endif
 
 using namespace std::literals;
@@ -502,6 +503,11 @@ namespace platf::virtualhid {
     }
 
     const auto &capabilities = global->runtime->capabilities();
+#ifdef __APPLE__
+    if (capabilities.backend_name == "macos-coregraphics") {
+      macos_pen = std::make_shared<macos::pen_device_t>();
+    }
+#endif
     if (capabilities.supports_touchscreen) {
       lvh::CreateTouchscreenOptions options;
       options.profile = lvh::profiles::touchscreen();
@@ -897,6 +903,19 @@ namespace platf::virtualhid {
   }
 
   void pen_update(client_context_t &context, const touch_port_t &touch_port, const pen_input_t &pen) {
+#ifdef __APPLE__
+    if (context.macos_pen) {
+      if (config::input.mouse && config::input.native_pen_touch) {
+        context.macos_pen->update(touch_port, pen);
+      } else {
+        // Disabling pen input must also release a stroke that was already in progress.
+        pen_input_t cancel {};
+        cancel.eventType = LI_TOUCH_EVENT_CANCEL_ALL;
+        context.macos_pen->update({}, cancel);
+      }
+      return;
+    }
+#endif
     if (!context.pen) {
       return;
     }
@@ -1028,9 +1047,9 @@ namespace platf {
   }  // namespace
 
   input_t input() {
-#ifdef __APPLE__
+  #ifdef __APPLE__
     macos::init_smooth_scroll();
-#endif
+  #endif
     return {new input_raw_t {}};
   }
 
@@ -1039,9 +1058,9 @@ namespace platf {
   }
 
   void freeInput(input_raw_t *input) {
-#ifdef __APPLE__
+  #ifdef __APPLE__
     macos::shutdown_smooth_scroll();
-#endif
+  #endif
     std::default_delete<input_raw_t> {}(input);
   }
 

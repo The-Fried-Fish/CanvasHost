@@ -925,7 +925,14 @@ namespace rtsp_stream {
     std::stringstream ss;
 
     // Tell the client about our supported features
-    ss << "a=x-ss-general.featureFlags:" << (uint32_t) platf::get_capabilities() << std::endl;
+    const auto capabilities = platf::get_capabilities();
+    ss << "a=x-ss-general.featureFlags:" << (uint32_t) capabilities << std::endl;
+#ifdef __APPLE__
+    // Foundation clients send the extended pen packet only after this negotiation.
+    if (config::input.mouse && (capabilities & platf::platform_caps::pen_touch)) {
+      ss << "a=x-ss-general.penBarrelRoll:1" << std::endl;
+    }
+#endif
 
     // Always request new control stream encryption if the client supports it
     uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;

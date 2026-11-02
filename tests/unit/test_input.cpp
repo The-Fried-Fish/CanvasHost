@@ -24,6 +24,7 @@ extern "C" {
 // local includes
 #include "src/config.h"
 #include "src/input.h"
+#include "src/pen_barrel_roll.h"
 #include "src/platform/virtualhid_input.h"
 #include "src/utility.h"
 
@@ -83,6 +84,7 @@ namespace {
      * @brief Destroy retained test sessions and restore configuration.
      */
     void TearDown() override {
+      input::testing::set_pen_sink({});
       input::terminate_gamepads();
       input::testing::set_platform_input({});
       context_ = nullptr;
@@ -297,3 +299,163 @@ TEST_F(InputGamepadSessionTest, RefreshesSharedVirtualInputAfterLicenseStateChan
   EXPECT_NE(context().mouse->device_id(), original_mouse_id);
   EXPECT_EQ(runtime().active_device_count(), active_devices);
 }
+
+/** @brief The Foundation extension accepts exactly its 40-byte layout. */
+TEST(InputPacketValidationTest, ValidatesIndependentBarrelRollLayout) {
+  using namespace input::pen_wire;
+  for (std::size_t size = 0; size <= 48; ++size) {
+    const auto packet = make_input_packet(magic, 36, size);
+    EXPECT_EQ(input::testing::is_valid_input_packet(packet), size == sizeof(packet_t)) << size;
+  }
+  for (std::uint32_t declared = 0; declared <= 44; ++declared) {
+    EXPECT_EQ(input::testing::is_valid_input_packet(make_input_packet(magic, declared, 40)), declared == 36) << declared;
+  }
+  EXPECT_EQ(decode_roll(util::endian::little<std::uint16_t>(725)), 5);
+  EXPECT_EQ(decode_roll(unknown), unknown);
+}
+
+/** @brief Fixed, missing, varied and reset roll observations match the Foundation fork. */
+TEST(PenBarrelRollTest, HardwareDetectionAndFallback) {
+  using namespace input::pen_wire;
+  roll_probe_t probe;
+  EXPECT_EQ(probe.select(unknown, 10), 10);
+  EXPECT_EQ(probe.select(0, 20), 20);
+  EXPECT_EQ(probe.select(0, 30), 30);
+  EXPECT_EQ(probe.select(unknown, 40), 40);
+  EXPECT_EQ(probe.select(1, 50), 1);
+  EXPECT_EQ(probe.select(0, 60), 0);
+  EXPECT_EQ(probe.select(90, 60), 90);
+  EXPECT_EQ(probe.select(180, 60), 180);
+  EXPECT_EQ(probe.select(270, 60), 270);
+  EXPECT_EQ(probe.select(359, 60), 359);
+  EXPECT_EQ(probe.select(unknown, 70), 70);
+  probe.reset();
+  EXPECT_EQ(probe.select(90, 80), 80);
+  EXPECT_EQ(probe.select(90, unknown), unknown);
+}
+
+namespace {
+  /**
+   * @brief Encode an extended pen packet with independent roll and tip azimuth.
+   * @param roll Barrel angle.
+   * @param azimuth Pen-tip orientation.
+   * @param type Protocol transition.
+   * @return Exact Foundation wire bytes.
+   */
+  std::vector<std::uint8_t> extended_pen(std::uint16_t roll, std::uint16_t azimuth, std::uint8_t type = LI_TOUCH_EVENT_MOVE) {
+    input::pen_wire::packet_t packet {};
+    packet.pen.header = {util::endian::big<std::uint32_t>(36), util::endian::little(input::pen_wire::magic)};
+    packet.pen.eventType = type;
+    packet.pen.toolType = LI_TOOL_TYPE_PEN;
+    packet.pen.rotation = util::endian::little(azimuth);
+    packet.barrelRoll = util::endian::little(roll);
+    const float half = .5F;
+    std::memcpy(packet.pen.x, &half, sizeof(half));
+    std::memcpy(packet.pen.y, &half, sizeof(half));
+    std::vector<std::uint8_t> bytes(sizeof(packet));
+    std::memcpy(bytes.data(), &packet, sizeof(packet));
+    return bytes;
+  }
+}  // namespace
+
+/** @brief Observe every hardware sample before batching, and reset detection on legacy packets. */
+TEST_F(InputGamepadSessionTest, BarrelRollSurvivesBatchingAndProtocolChanges) {
+  ASSERT_FALSE(task_pool.running());
+  config::input.mouse = config::input.native_pen_touch = true;
+  auto mail = std::make_shared<safe::mail_raw_t>();
+  auto stream_input = input::alloc(mail, "barrel-roll-client");
+  mail->event<input::touch_port_t>(mail::touch_port)->raise(input::touch_port_t {{0, 0, 1000, 500, 1000, 500}, 1000, 500, 0, 0, 1, 1, 1000, 500});
+  std::vector<platf::pen_input_t> delivered;
+  input::testing::set_pen_sink([&](const auto &, const auto &pen) {
+    delivered.push_back(pen);
+  });
+  // Reject invalid extensions before either queueing or observing their roll values.
+  for (int i = 0; i < 2; ++i) {
+    auto malformed = extended_pen(100 + i, 45);
+    malformed.push_back(0);
+    input::passthrough(stream_input, std::move(malformed));
+  }
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 0);
+  input::passthrough(stream_input, extended_pen(0, 45));
+  input::passthrough(stream_input, extended_pen(1, 90));
+  input::passthrough(stream_input, extended_pen(0, 180));
+  input::testing::process_next_input(stream_input);
+  ASSERT_EQ(delivered.size(), 1);
+  EXPECT_EQ(delivered.back().rotation, 180);
+  EXPECT_EQ(delivered.back().barrelRoll, 0);  // The intermediate 1 proved real roll even though it was batched away.
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 0);
+
+  input::passthrough(stream_input, extended_pen(90, 45));
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().barrelRoll, 90);
+  EXPECT_EQ(delivered.back().rotation, 45);
+
+  auto legacy = extended_pen(0, 270);
+  legacy.resize(sizeof(SS_PEN_PACKET));
+  NV_INPUT_HEADER header {util::endian::big<std::uint32_t>(32), util::endian::little<std::uint32_t>(SS_PEN_MAGIC)};
+  std::memcpy(legacy.data(), &header, sizeof(header));
+  input::passthrough(stream_input, std::move(legacy));
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().barrelRoll, 270);
+  input::passthrough(stream_input, extended_pen(0, 30));
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().barrelRoll, 30);
+  input::passthrough(stream_input, extended_pen(input::pen_wire::unknown, 60));
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().barrelRoll, 60);
+
+  // Different transitions and tools must remain separate during coalescing.
+  input::passthrough(stream_input, extended_pen(20, 90, LI_TOUCH_EVENT_DOWN));
+  input::passthrough(stream_input, extended_pen(30, 90, LI_TOUCH_EVENT_UP));
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().eventType, LI_TOUCH_EVENT_DOWN);
+  EXPECT_EQ(delivered.back().barrelRoll, 20);
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 1);
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().eventType, LI_TOUCH_EVENT_UP);
+  EXPECT_EQ(delivered.back().barrelRoll, 30);
+  input::testing::set_pen_sink({});
+}
+
+/** @brief Reject stale input after disconnect and restart roll detection on session resume. */
+TEST_F(InputGamepadSessionTest, DisconnectClearsQueuedPenAndRollDetection) {
+  ASSERT_FALSE(task_pool.running());
+  config::input.mouse = true;
+  auto mail = std::make_shared<safe::mail_raw_t>();
+  auto stream_input = input::alloc(mail, "roll-reset-client");
+  input::passthrough(stream_input, extended_pen(0, 90));
+  input::passthrough(stream_input, extended_pen(1, 90));
+  input::reset(stream_input);
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 0);
+  input::passthrough(stream_input, extended_pen(2, 90));
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 0);
+  auto resumed = input::alloc(mail, "roll-reset-client");
+  EXPECT_EQ(resumed, stream_input);
+  mail->event<input::touch_port_t>(mail::touch_port)->raise(input::touch_port_t {{0, 0, 1000, 500, 1000, 500}, 1000, 500, 0, 0, 1, 1, 1000, 500});
+  std::uint16_t roll = 0;
+  input::testing::set_pen_sink([&](const auto &, const auto &pen) {
+    roll = pen.barrelRoll;
+  });
+  input::passthrough(resumed, extended_pen(0, 120));
+  input::testing::process_next_input(resumed);
+  EXPECT_EQ(roll, 120);
+  input::testing::set_pen_sink({});
+}
+
+#ifdef __APPLE__
+/** @brief Cancellation and button-only packets reach Quartz even before touch-port metadata exists. */
+TEST_F(InputGamepadSessionTest, PenControlPacketsDoNotRequireCoordinates) {
+  auto stream_input = input::alloc(std::make_shared<safe::mail_raw_t>(), "pen-controls-client");
+  std::vector<platf::pen_input_t> delivered;
+  input::testing::set_pen_sink([&](const auto &, const auto &pen) {
+    delivered.push_back(pen);
+  });
+  for (const auto type : {LI_TOUCH_EVENT_BUTTON_ONLY, LI_TOUCH_EVENT_CANCEL, LI_TOUCH_EVENT_CANCEL_ALL, LI_TOUCH_EVENT_HOVER_LEAVE}) {
+    input::passthrough(stream_input, extended_pen(input::pen_wire::unknown, LI_ROT_UNKNOWN, type));
+    input::testing::process_next_input(stream_input);
+    ASSERT_FALSE(delivered.empty());
+    EXPECT_EQ(delivered.back().eventType, type);
+  }
+  input::testing::set_pen_sink({});
+}
+#endif

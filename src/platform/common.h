@@ -387,6 +387,7 @@ namespace platf {
     int height;  ///< Frame or display height in pixels.
     int logical_width;  ///< Logical width after display scaling.
     int logical_height;  ///< Logical height after display scaling.
+    std::uint32_t native_display_id = 0;  ///< Native display identity when supported; zero uses viewport geometry.
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!
@@ -499,12 +500,13 @@ namespace platf {
     std::uint8_t toolType;  ///< Pen tool type reported by the client.
     std::uint8_t penButtons;  ///< Button mask for the active pen tool.
     std::uint8_t tilt;  ///< Degrees (0..90) or LI_TILT_UNKNOWN.
-    std::uint16_t rotation;  ///< Degrees (0..360) or LI_ROT_UNKNOWN.
+    std::uint16_t rotation;  ///< Pen-tip azimuth in degrees (0..360) or LI_ROT_UNKNOWN.
     float x;  ///< Horizontal coordinate or vector component.
     float y;  ///< Vertical coordinate or vector component.
     float pressureOrDistance;  ///< Distance for hover and pressure for contact.
     float contactAreaMajor;  ///< Major axis of the reported contact area.
     float contactAreaMinor;  ///< Minor axis of the reported contact area.
+    std::uint16_t barrelRoll = 0xffff;  ///< Independent barrel rotation; unknown falls back to pen-tip azimuth.
   };
 
   /**
@@ -787,6 +789,7 @@ namespace platf {
     int env_height {0};  ///< Height of the full capture environment in physical pixels.
     int env_logical_width {0};  ///< Width of the full capture environment after display scaling.
     int env_logical_height {0};  ///< Height of the full capture environment after display scaling.
+    std::uint32_t native_display_id {0};  ///< Native display identity carried into absolute input viewports.
     int width {0};  ///< Width of the captured display in physical pixels.
     int height {0};  ///< Height of the captured display in physical pixels.
     int logical_width {0};  ///< Width of the captured display after display scaling.

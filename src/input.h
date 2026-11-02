@@ -154,6 +154,18 @@ namespace input {
     void release_held_keys();
 
     /**
+     * @brief Replace pen delivery with a synchronous recorder for protocol tests.
+     * @param sink Receives normalized viewport and pen samples; empty restores platform delivery.
+     */
+    void set_pen_sink(std::function<void(const platf::touch_port_t &, const platf::pen_input_t &)> sink);
+
+    /**
+     * @brief Process and batch the next queued input on the calling test thread.
+     * @param input Test session with its worker pool stopped.
+     */
+    void process_next_input(const std::shared_ptr<input_t> &input);
+
+    /**
      * @brief Validate raw protocol input bytes for a unit test.
      *
      * @param packet Raw packet bytes.
