@@ -676,9 +676,11 @@ TEST(FrameDrainSupportTest, TreatsMissingOptionsAsSupported) {
 }
 
 /** @brief Follow a changed display's aspect ratio within the negotiated encoder bounds. */
-TEST(VideoDisplayResizeTest, FitsChangedModeAndRotation) {
-  using video::detail::fit_changed_display;
-  EXPECT_EQ(fit_changed_display({2560, 1600}, {1920, 1080}, false), (std::pair {1728, 1080}));
-  EXPECT_EQ(fit_changed_display({1080, 1920}, {1920, 1080}, true), (std::pair {1080, 1920}));
-  EXPECT_EQ(fit_changed_display({1279, 719}, {1920, 1080}, false), (std::pair {1278, 718}));
+TEST(VideoDisplayResizeTest, FitsInitialModeAndRotation) {
+  using video::detail::fit_display_resolution;
+  EXPECT_EQ(fit_display_resolution({3840, 2160}, {2420, 1668}, false), (std::pair {2420, 1360}));
+  EXPECT_EQ(fit_display_resolution({2420, 1668}, {2420, 1668}, false), (std::pair {2420, 1668}));
+  EXPECT_EQ(fit_display_resolution({2560, 1600}, {1920, 1080}, false), (std::pair {1728, 1080}));
+  EXPECT_EQ(fit_display_resolution({1080, 1920}, {1920, 1080}, true), (std::pair {1080, 1920}));
+  EXPECT_EQ(fit_display_resolution({1279, 719}, {1920, 1080}, false), (std::pair {1278, 718}));
 }

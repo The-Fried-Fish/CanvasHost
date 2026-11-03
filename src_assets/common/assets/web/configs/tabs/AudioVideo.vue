@@ -90,7 +90,7 @@ const config = ref(props.config)
               id="virtual_display"
               locale-prefix="config"
               v-model="config.virtual_display"
-              default="true"
+              default="false"
     ></Checkbox>
     <Checkbox v-if="platform === 'macos'"
               class="mb-3"

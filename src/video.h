@@ -786,13 +786,13 @@ namespace video {
    */
   namespace detail {
     /**
-     * @brief Fit a changed display into the negotiated pixel bounds, swapping bounds on rotation.
-     * @param display New display dimensions.
+     * @brief Fit a display into the negotiated pixel bounds, swapping bounds on rotation.
+     * @param display Captured display dimensions.
      * @param negotiated Client-requested dimensions.
      * @param rotated Whether the display orientation differs from its initial orientation.
      * @return Even encoder dimensions with the new display aspect ratio.
      */
-    std::pair<int, int> fit_changed_display(std::pair<int, int> display, std::pair<int, int> negotiated, bool rotated);
+    std::pair<int, int> fit_display_resolution(std::pair<int, int> display, std::pair<int, int> negotiated, bool rotated);
 
     /**
      * @brief Attach a capture timestamp to a frame before it is handed to the encode sessions.

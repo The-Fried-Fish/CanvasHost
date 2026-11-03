@@ -827,7 +827,7 @@ namespace config {
       {}  // wa
     },  // display_device
 
-    "enabled"s,  // virtual_display
+    "disabled"s,  // virtual_display
     true,  // show_cursor
 
     0,  // max_bitrate

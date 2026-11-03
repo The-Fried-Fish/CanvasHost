@@ -47,7 +47,7 @@ using namespace std::literals;
 
 namespace video {
 
-  std::pair<int, int> detail::fit_changed_display(std::pair<int, int> display, std::pair<int, int> negotiated, bool rotated) {
+  std::pair<int, int> detail::fit_display_resolution(std::pair<int, int> display, std::pair<int, int> negotiated, bool rotated) {
     if (rotated) {
       std::swap(negotiated.first, negotiated.second);
     }
@@ -3031,14 +3031,14 @@ namespace video {
       if (display_size.first > 0 && display_size.second > 0) {
         if (initial_display_size.first == 0) {
           initial_display_size = display_size;
-        } else if (display_size != last_display_size) {
+        }
+        if (display_size != last_display_size) {
           const bool rotated = (initial_display_size.first > initial_display_size.second) != (display_size.first > display_size.second);
-          const auto size = display_size == initial_display_size ?
-                              std::pair {negotiated.width, negotiated.height} :
-                              detail::fit_changed_display(display_size, {negotiated.width, negotiated.height}, rotated);
+          const auto size = detail::fit_display_resolution(display_size, {negotiated.width, negotiated.height}, rotated);
           config.width = size.first;
           config.height = size.second;
-          BOOST_LOG(info) << "macOS encoding size after display change: " << config.width << "x" << config.height;
+          BOOST_LOG(info) << "macOS encoding size for display " << display_size.first << "x" << display_size.second
+                          << ": " << config.width << "x" << config.height;
         }
         last_display_size = display_size;
       }

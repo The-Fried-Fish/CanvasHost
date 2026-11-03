@@ -215,3 +215,17 @@ INSTANTIATE_TEST_SUITE_P(
     VideotoolboxDrainConfigParam {"vt_drain = 99\n"sv, 16}
   )
 );
+
+/** @brief Preserve the existing desktop unless the host opts into a virtual extension. */
+TEST(VirtualDisplayConfigTest, ExistingDisplayByDefaultAndExplicitExtension) {
+  const auto original_video = config::video;
+  const auto original_modified_settings = config::modified_config_settings;
+  const auto restore = util::fail_guard([&]() {
+    config::video = original_video;
+    config::modified_config_settings = original_modified_settings;
+  });
+
+  EXPECT_EQ(config::video.virtual_display, "disabled");
+  config::apply_config_for_test("virtual_display = enabled\n");
+  EXPECT_EQ(config::video.virtual_display, "enabled");
+}

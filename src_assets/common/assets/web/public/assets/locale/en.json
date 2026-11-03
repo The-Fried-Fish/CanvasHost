@@ -288,7 +288,7 @@
     "macos_smooth_scrolling_diagnostics_enabled": "Enabled (one-second summaries)",
     "macos_smooth_scrolling_diagnostics_trace": "Trace (every packet and event)",
     "virtual_display": "Automatic virtual display",
-    "virtual_display_desc": "Create a macOS virtual display matching the client's resolution and refresh rate when streaming starts.",
+    "virtual_display_desc": "Enable to create an extended virtual display on macOS. Disable to stream an existing display without adding a screen.",
     "show_cursor": "Show host cursor",
     "show_cursor_desc": "Include the host cursor in the captured stream. Enabled by default.",
     "macos_smooth_scrolling": "macOS Smooth Scrolling Optimization",

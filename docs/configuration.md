@@ -1512,18 +1512,18 @@ supported on the current platform.
 <table>
     <tr>
         <td>Description</td>
-        <td colspan="2">On macOS, create a virtual display matching the client's resolution and refresh rate when a stream starts. The vd_helper executable must be installed beside the host executable.</td>
+        <td colspan="2">On macOS, stream an existing display by default. Enable this option to create an extended virtual display matching the client's resolution and refresh rate. The vd_helper executable must be installed beside the host executable.</td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            enabled
+            disabled
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            virtual_display = disabled
+            virtual_display = enabled
             @endcode</td>
     </tr>
 </table>
