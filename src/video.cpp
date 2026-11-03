@@ -47,6 +47,14 @@ using namespace std::literals;
 
 namespace video {
 
+  std::pair<int, int> detail::fit_changed_display(std::pair<int, int> display, std::pair<int, int> negotiated, bool rotated) {
+    if (rotated) {
+      std::swap(negotiated.first, negotiated.second);
+    }
+    const auto scale = std::min({1.0, double(negotiated.first) / display.first, double(negotiated.second) / display.second});
+    return {std::max(2, int(display.first * scale) & ~1), std::max(2, int(display.second * scale) & ~1)};
+  }
+
   namespace {
     /**
      * @brief Check if we can allow probing for the encoders.
@@ -2514,6 +2522,13 @@ namespace video {
       }
     }
 
+#ifdef __APPLE__
+    disp->encoder_ready.raise(true);
+    bool waiting_for_capture = true;
+#else
+    constexpr bool waiting_for_capture = false;
+#endif
+
     while (true) {
       bool requested_idr_frame = false;
 
@@ -2535,9 +2550,15 @@ namespace video {
       std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
 
       // Encode at a minimum FPS to avoid image quality issues with static content
-      if (!requested_idr_frame || images->peek()) {
+      if (waiting_for_capture || !requested_idr_frame || images->peek()) {
         if (auto img = images->pop(max_frametime)) {
           frame_timestamp = img->frame_timestamp;
+#ifdef __APPLE__
+          if (waiting_for_capture) {
+            session->request_idr_frame();
+            waiting_for_capture = false;
+          }
+#endif
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             return;
@@ -2557,8 +2578,12 @@ namespace video {
       //
       // Ensure that this check occurs as close as possible to the encode call to prevent packets
       // in flight after encoder teardown.
-      if (shutdown_event->peek() || !images->running() || (reinit_event.peek() && frame_nr > 1)) {
+      if (shutdown_event->peek() || !images->running() || (reinit_event.peek() && (waiting_for_capture || frame_nr > 1))) {
         break;
+      }
+
+      if (waiting_for_capture) {
+        continue;
       }
 
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp)) {
@@ -2944,14 +2969,19 @@ namespace video {
    * @brief Capture and encode video using the asynchronous capture thread.
    *
    * @param mail Session mail bus.
-   * @param config Video configuration.
+   * @param negotiated Video configuration.
    * @param channel_data Opaque channel data passed to packets.
    */
   void capture_async(
     safe::mail_t mail,
-    config_t &config,
+    config_t &negotiated,
     void *channel_data
   ) {
+    auto config = negotiated;
+#ifdef __APPLE__
+    std::pair<int, int> initial_display_size {};
+    std::pair<int, int> last_display_size {};
+#endif
     auto shutdown_event = mail->event<bool>(mail::shutdown);
 
     auto images = std::make_shared<img_event_t::element_type>();
@@ -2995,6 +3025,25 @@ namespace video {
 
         display = ref->display_wp->lock();
       }
+
+#ifdef __APPLE__
+      const auto display_size = std::pair {display->width, display->height};
+      if (display_size.first > 0 && display_size.second > 0) {
+        if (initial_display_size.first == 0) {
+          initial_display_size = display_size;
+        } else if (display_size != last_display_size) {
+          const bool rotated = (initial_display_size.first > initial_display_size.second) != (display_size.first > display_size.second);
+          const auto size = display_size == initial_display_size ?
+                              std::pair {negotiated.width, negotiated.height} :
+                              detail::fit_changed_display(display_size, {negotiated.width, negotiated.height}, rotated);
+          config.width = size.first;
+          config.height = size.second;
+          BOOST_LOG(info) << "macOS encoding size after display change: " << config.width << "x" << config.height;
+        }
+        last_display_size = display_size;
+      }
+      mail->event<bool>(mail::idr)->raise(true);
+#endif
 
       auto &encoder = *chosen_encoder;
 

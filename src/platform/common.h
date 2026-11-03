@@ -701,6 +701,11 @@ namespace platf {
 
     display_t() noexcept = default;
 
+#ifdef __APPLE__
+    safe::signal_t encoder_ready;  ///< Raised once the encoder has configured capture dimensions and pixel format.
+#endif
+
+
     /**
      * @brief Capture a frame.
      * @param push_captured_image_cb The callback that is called with captured image,

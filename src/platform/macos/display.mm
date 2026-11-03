@@ -255,6 +255,7 @@ namespace platf {
   struct sc_display_t: public display_t {
     SCCapture *sc_capture {};  ///< ScreenCaptureKit capture object driving this display backend.
     CGDirectDisplayID display_id {};  ///< Output display being captured.
+    CGDirectDisplayID requested_display_id {};  ///< Display selected before resolving mirroring.
 
     /**
      * @brief Spacing between reports of skipped idle ScreenCaptureKit deliveries.
@@ -267,6 +268,10 @@ namespace platf {
     }
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
+      if (!encoder_ready.view(std::chrono::seconds(5))) {
+        BOOST_LOG(error) << "Timed out waiting for the macOS encoder to configure capture"sv;
+        return capture_e::error;
+      }
       sc_capture.showsCursor = *cursor;
 
       // ScreenCaptureKit delivers frames on its sample handler queue while the polling loop below
@@ -304,7 +309,32 @@ namespace platf {
       std::uint64_t reported_idle_skips {};
       auto next_idle_report = std::chrono::steady_clock::now() + idle_report_interval;
 
-      while (dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC)) != 0) {
+      while (true) {
+        const bool capture_ended = dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC)) == 0;
+        const auto mirror_source = CGDisplayMirrorsDisplay(requested_display_id);
+        const auto capture_display = mirror_source == kCGNullDirectDisplay ? requested_display_id : mirror_source;
+        if (capture_display != display_id) {
+          [sc_capture stopCapture];
+          return capture_e::reinit;
+        }
+
+        auto mode = CGDisplayCopyDisplayMode(display_id);
+        const auto mode_width = mode ? CGDisplayModeGetPixelWidth(mode) : CGDisplayPixelsWide(display_id);
+        const auto mode_height = mode ? CGDisplayModeGetPixelHeight(mode) : CGDisplayPixelsHigh(display_id);
+        if (mode) {
+          CFRelease(mode);
+        }
+        if (mode_width != static_cast<size_t>(width) || mode_height != static_cast<size_t>(height)) {
+          BOOST_LOG(info) << "macOS display size changed from " << width << "x" << height
+                          << " to " << mode_width << "x" << mode_height;
+          [sc_capture stopCapture];
+          return capture_e::reinit;
+        }
+
+        if (capture_ended) {
+          break;
+        }
+
         // If cursor toggle occurred, stop capture cleanly so video loop reinitializes with new setting
         if (sc_capture.showsCursor != *cursor) {
           [sc_capture stopCapture];
@@ -467,6 +497,11 @@ namespace platf {
         }
       }
     }
+    const auto requested_display_id = selected_display_id;
+    if (const auto mirror_source = CGDisplayMirrorsDisplay(selected_display_id); mirror_source != kCGNullDirectDisplay) {
+      BOOST_LOG(info) << "Capturing mirror source " << mirror_source << " for display " << selected_display_id;
+      selected_display_id = mirror_source;
+    }
     BOOST_LOG(info) << "Configuring selected display ("sv << selected_display_id << ") to stream"sv;
 
     // ScreenCaptureKit capture backend — handles virtual display reconnection
@@ -475,6 +510,7 @@ namespace platf {
     if (@available(macOS 12.3, *)) {
       if ([SCCapture isAvailable]) {
         auto disp = std::make_shared<sc_display_t>();
+        disp->requested_display_id = requested_display_id;
         disp->display_id = selected_display_id;
         disp->native_display_id = selected_display_id;
         disp->sc_capture = [[SCCapture alloc] initWithDisplay:selected_display_id frameRate:config.framerate captureAudio:NO];
