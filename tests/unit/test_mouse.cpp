@@ -168,6 +168,32 @@ TEST_P(MouseHIDTest, MoveInputTest) {
   expect_relative_axis_moved(new_loc->y - old_loc->y, mouse_delta.y);
 }
 
+#ifdef __APPLE__
+TEST_F(BaseTest, CentersRelativeMouseOnRequestedDisplay) {
+  CGDirectDisplayID displays[16];
+  uint32_t count = 0;
+  ASSERT_EQ(CGGetActiveDisplayList(16, displays, &count), kCGErrorSuccess);
+  ASSERT_GT(count, 0U);
+  const auto display = displays[count - 1];
+  const auto bounds = CGDisplayBounds(display);
+  auto input = platf::input();
+  if (!input || !CGPreflightPostEventAccess()) {
+    GTEST_SKIP() << "Mouse injection is unavailable";
+  }
+
+  ASSERT_TRUE(platf::center_relative_mouse(input, display));
+  const auto position = wait_for_mouse_location(input, [bounds](const auto &location) {
+    return is_near(location.x, CGRectGetMidX(bounds)) && is_near(location.y, CGRectGetMidY(bounds));
+  });
+  ASSERT_TRUE(position);
+  platf::move_mouse(input, 10, 10);
+  EXPECT_TRUE(wait_for_mouse_location(input, [position, bounds](const auto &location) {
+    return location.x > position->x && location.y > position->y &&
+           CGRectContainsPoint(bounds, CGPointMake(location.x, location.y));
+  }));
+}
+#endif
+
 TEST_P(MouseHIDTest, AbsMoveInputTest) {
   util::point_t mouse_pos = GetParam();
   BOOST_LOG(tests) << "AbsMoveInputTest:: got param: " << mouse_pos;

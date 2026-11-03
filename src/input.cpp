@@ -325,6 +325,9 @@ namespace input {
 
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
 
+#ifdef __APPLE__
+    bool relative_mouse_positioned = false;  ///< Whether the remote relative mouse has started on the capture display.
+#endif
     input::touch_port_t touch_port;  ///< Touch coordinate bounds for the current stream.
 
     int32_t accumulated_vscroll_delta;  ///< Accumulated vscroll delta.
@@ -441,6 +444,10 @@ namespace input {
    */
   void rebind_input(const std::shared_ptr<input_t> &input, const safe::mail_t &mail) {
     input->touch_port_event = mail->event<input::touch_port_t>(mail::touch_port);
+#ifdef __APPLE__
+    input->relative_mouse_positioned = false;
+    input->touch_port = {};
+#endif
     input->feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
 
     for (int client_index = 0; client_index < input->gamepads.size(); ++client_index) {
@@ -766,6 +773,17 @@ namespace input {
     }
 
     input->mouse_left_button_timeout = DISABLE_LEFT_BUTTON_DELAY;
+#ifdef __APPLE__
+    if (!input->relative_mouse_positioned) {
+      if (auto port = input->touch_port_event->pop(0ms)) {
+        input->touch_port = *port;
+      }
+      if (input->touch_port.native_display_id != 0) {
+        input->relative_mouse_positioned = platf::center_relative_mouse(platf_input, input->touch_port.native_display_id);
+      }
+      return;
+    }
+#endif
     platf::move_mouse(platf_input, util::endian::big(packet->deltaX), util::endian::big(packet->deltaY));
   }
 

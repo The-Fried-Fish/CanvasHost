@@ -1168,6 +1168,16 @@ namespace platf {
    * @param deltaY Delta y.
    */
   void move_mouse(input_t &input, int deltaX, int deltaY);
+
+#ifdef __APPLE__
+  /**
+   * @brief Start relative mouse movement at the center of a capture display.
+   * @param input Platform input context.
+   * @param display_id Native capture display ID.
+   * @return Whether the pointer was positioned successfully.
+   */
+  bool center_relative_mouse(input_t &input, std::uint32_t display_id);
+#endif
   /**
    * @brief Move the pointer to an absolute client-provided touch coordinate.
    *

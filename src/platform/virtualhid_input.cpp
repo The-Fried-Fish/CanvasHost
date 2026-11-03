@@ -1077,6 +1077,13 @@ namespace platf {
     virtualhid::move_mouse(virtualhid::get_input_context(input), deltaX, deltaY);
   }
 
+#ifdef __APPLE__
+  bool center_relative_mouse(input_t &input, std::uint32_t display_id) {
+    auto &mouse = virtualhid::get_input_context(input).mouse;
+    return mouse && mouse->submit(lvh::MouseEvent {.native_relative_display = display_id}).ok();
+  }
+#endif
+
   void abs_mouse(input_t &input, const touch_port_t &touch_port, float x, float y) {
     virtualhid::abs_mouse(virtualhid::get_input_context(input), touch_port, x, y);
   }
