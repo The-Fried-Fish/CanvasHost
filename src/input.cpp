@@ -36,6 +36,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "mac_trackpad_gesture.h"
 #include "pen_barrel_roll.h"
 #include "platform/common.h"
 #include "platform/virtualhid_input.h"
@@ -156,7 +157,7 @@ namespace input {
    * @param f Little-endian network float bytes.
    * @return Floating-point value decoded for the host CPU.
    */
-  float from_netfloat(netfloat f) {
+  float from_netfloat(const netfloat f) {
     return boost::endian::endian_load<float, sizeof(float), boost::endian::order::little>(f);
   }
 
@@ -362,6 +363,9 @@ namespace input {
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
 
 #ifdef __APPLE__
+    bool mac_magnify_active = false;  ///< Whether the client has an active Quartz magnification.
+    bool mac_rotate_active = false;  ///< Whether the client has an active Quartz rotation.
+    bool scroll_brake_left_down = false;  ///< Left press consumed to brake inertia, awaiting release.
     native_touch_state_t native_touch;  ///< Touchscreen compatibility state.
     bool relative_mouse_positioned = false;  ///< Whether the remote relative mouse has started on the capture display.
 #endif
@@ -983,6 +987,28 @@ namespace input {
 
     auto release = util::endian::little(packet->header.magic) == MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5;
     auto button = util::endian::big(packet->button);
+#ifdef __APPLE__
+    if (button == BUTTON_LEFT) {
+      if (config::input.macos_smooth_scrolling_diagnostics == "trace" ||
+          (std::getenv("LUMEN_SCROLL_DIAGNOSTICS") && std::string_view {std::getenv("LUMEN_SCROLL_DIAGNOSTICS")} == "trace")) {
+        BOOST_LOG(info) << "macOS scroll trace: mouse packet"
+                        << " button=" << static_cast<int>(button) << " release=" << release
+                        << " pressed=" << static_cast<bool>(mouse_press[button])
+                        << " suppressed=" << input->scroll_brake_left_down;
+      }
+      if (input->scroll_brake_left_down) {
+        if (release) {
+          input->scroll_brake_left_down = false;
+        }
+        return;
+      }
+      // A release for an already-up button must not consume the brake.
+      if (mouse_press[button] == release && platf::macos::brake_scroll_momentum() && !release) {
+        input->scroll_brake_left_down = true;
+        return;
+      }
+    }
+#endif
     if (button > 0 && button < mouse_press.size()) {
       if (mouse_press[button] != release) {
         // button state is already what we want
@@ -1563,14 +1589,51 @@ namespace input {
   }
 
   /**
+   * @brief Forward a macOS trackpad gesture to Quartz.
+   * @param input Stream input context.
+   * @param packet Gesture packet.
+   * @param rotate Whether the packet carries rotation.
+   */
+  void passthrough(std::shared_ptr<input_t> &input, const mac_trackpad_wire::packet_t &packet, bool rotate) {
+    if (!config::input.mouse) {
+      return;
+    }
+    using platf::macos::gesture_phase;
+    const auto phase = static_cast<gesture_phase>(packet.phase);
+    auto &active = rotate ? input->mac_rotate_active : input->mac_magnify_active;
+    const auto post = rotate ? platf::macos::touch_rotate : platf::macos::touch_magnify;
+    switch (phase) {
+      case gesture_phase::began:
+        if (!active) {
+          platf::macos::cancel_touch_scroll();
+          active = post(phase, 0);
+        }
+        break;
+      case gesture_phase::changed:
+        if (const auto amount = from_netfloat(packet.amount);
+            active && std::isfinite(amount) && (rotate ? std::abs(amount) <= 180 : amount > -1)) {
+          post(phase, amount);
+        }
+        break;
+      case gesture_phase::ended:
+      case gesture_phase::cancelled:
+        if (active) {
+          post(phase, 0);
+          active = false;
+        }
+        break;
+    }
+  }
+
+  /**
    * @brief End a magnify sequence if one is active.
    * @param state Touchscreen compatibility state.
    * @param cancelled Whether to cancel the gesture.
    */
   void finish_native_touch_magnify(native_touch_state_t &state, bool cancelled) {
     if (state.magnifying) {
-      using platf::macos::magnify_phase;
-      platf::macos::touch_magnify(cancelled ? magnify_phase::cancelled : magnify_phase::ended, 0);
+      using platf::macos::gesture_phase;
+      platf::macos::touch_magnify(cancelled ? gesture_phase::cancelled : gesture_phase::ended, 0);
       state.magnifying = false;
     }
   }
@@ -1587,13 +1650,13 @@ namespace input {
     }
     const auto motion = platf::macos::classify_touch_motion(displacement, sample_seconds, state.gesture_mode);
     if (motion.magnification != 0) {
-      using platf::macos::magnify_phase;
+      using platf::macos::gesture_phase;
       if (!state.magnifying) {
         platf::macos::cancel_touch_scroll();
-        state.magnifying = platf::macos::touch_magnify(magnify_phase::began, 0);
+        state.magnifying = platf::macos::touch_magnify(gesture_phase::began, 0);
       }
       if (state.magnifying) {
-        platf::macos::touch_magnify(magnify_phase::changed, std::expm1(motion.magnification / 300));
+        platf::macos::touch_magnify(gesture_phase::changed, std::expm1(motion.magnification / 300));
       }
     } else if (motion.x != 0 || motion.y != 0) {
       platf::macos::touch_scroll(motion.x, motion.y);
@@ -2159,6 +2222,9 @@ namespace input {
         return declared_size - sizeof(header.magic) <= UTF8_TEXT_EVENT_MAX_COUNT;
       case MULTI_CONTROLLER_MAGIC_GEN5:
         return validate_fixed_input_packet<NV_MULTI_CONTROLLER_PACKET>(packet, declared_size);
+      case mac_trackpad_wire::magnify_magic:
+      case mac_trackpad_wire::rotate_magic:
+        return validate_fixed_input_packet<mac_trackpad_wire::packet_t>(packet, declared_size);
       case SS_TOUCH_MAGIC:
         return validate_fixed_input_packet<SS_TOUCH_PACKET>(packet, declared_size);
       case SS_PEN_MAGIC:
@@ -2760,7 +2826,8 @@ namespace input {
     }
 
     // Send the batched input to the OS
-    switch (util::endian::little(payload->magic)) {
+    const auto type = util::endian::little(payload->magic);
+    switch (type) {
       case MOUSE_MOVE_REL_MAGIC_GEN5:
         passthrough(input, (PNV_REL_MOUSE_MOVE_PACKET) payload);
         break;
@@ -2787,6 +2854,12 @@ namespace input {
       case MULTI_CONTROLLER_MAGIC_GEN5:
         passthrough(input, (PNV_MULTI_CONTROLLER_PACKET) payload);
         break;
+#ifdef __APPLE__
+      case mac_trackpad_wire::magnify_magic:
+      case mac_trackpad_wire::rotate_magic:
+        passthrough(input, *reinterpret_cast<const mac_trackpad_wire::packet_t *>(payload), type == mac_trackpad_wire::rotate_magic);
+        break;
+#endif
       case SS_TOUCH_MAGIC:
         passthrough(input, (PSS_TOUCH_PACKET) payload);
         break;
@@ -2936,6 +3009,15 @@ namespace input {
     reset_keyboard_keys();
     reset_gamepads(input);
 #ifdef __APPLE__
+    input->scroll_brake_left_down = false;
+    if (input->mac_magnify_active) {
+      platf::macos::touch_magnify(platf::macos::gesture_phase::cancelled, 0);
+      input->mac_magnify_active = false;
+    }
+    if (input->mac_rotate_active) {
+      platf::macos::touch_rotate(platf::macos::gesture_phase::cancelled, 0);
+      input->mac_rotate_active = false;
+    }
     auto &touch = input->native_touch;
     release_native_touch_left(touch);
     finish_native_touch_magnify(touch, true);

@@ -933,6 +933,10 @@ namespace rtsp_stream {
       ss << "a=x-ss-general.penBarrelRoll:1" << std::endl;
       ss << "a=x-ss-general.macNativeTouchWorkaround:1" << std::endl;
     }
+    if (config::input.mouse) {
+      ss << "a=x-ss-general.macTrackpadSimulation:1" << std::endl;
+      ss << "a=x-ss-general.macTrackpadRotate:1" << std::endl;
+    }
 #endif
 
     // Always request new control stream encryption if the client supports it

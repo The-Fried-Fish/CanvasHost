@@ -29,6 +29,8 @@ namespace platf::macos {
   namespace {
     std::chrono::steady_clock::time_point last_input_time {};
     bool scroll_in_progress = false;
+    constexpr double MIN_MOMENTUM_VELOCITY = 12.0;  ///< Minimum velocity to start coasting, in pixels per second.
+    bool momentum_active = false;  ///< Protected by scroll_mutex.
     std::uint64_t scroll_cancel_generation = 0;
     double scroll_velocity_y = 0.0;
     double scroll_velocity_x = 0.0;
@@ -305,7 +307,6 @@ namespace platf::macos {
     void scroll_inertia_loop() {
       constexpr auto FRAME_DURATION = std::chrono::milliseconds(8);
       constexpr double FRICTION_PER_SECOND = 5.5;
-      constexpr double MIN_VELOCITY = 12.0;
 
       // Host-side fallback for clients that do not generate inertia themselves.
       pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
@@ -362,7 +363,8 @@ namespace platf::macos {
         auto velocity_y = scroll_velocity_y;
         auto velocity_x = scroll_velocity_x;
         scroll_in_progress = false;
-        const bool start_momentum = std::abs(velocity_y) > MIN_VELOCITY || std::abs(velocity_x) > MIN_VELOCITY;
+        const bool start_momentum = std::abs(velocity_y) > MIN_MOMENTUM_VELOCITY || std::abs(velocity_x) > MIN_MOMENTUM_VELOCITY;
+        momentum_active = start_momentum;
         lock.unlock();
         if (!start_momentum) {
           continue;
@@ -403,7 +405,7 @@ namespace platf::macos {
           }
           velocity_y *= std::exp(-FRICTION_PER_SECOND * elapsed);
           velocity_x *= std::exp(-FRICTION_PER_SECOND * elapsed);
-          if (std::abs(velocity_y) < MIN_VELOCITY && std::abs(velocity_x) < MIN_VELOCITY) {
+          if (std::abs(velocity_y) < MIN_MOMENTUM_VELOCITY && std::abs(velocity_x) < MIN_MOMENTUM_VELOCITY) {
             break;
           }
 
@@ -436,6 +438,8 @@ namespace platf::macos {
             next_ticks = wake_ticks + frame_ticks;
           }
         }
+        lock.lock();
+        momentum_active = false;
       }
     }
 
@@ -661,9 +665,10 @@ namespace platf::macos {
     post_pixel_scroll(y * touch_scroll_gain, x * touch_scroll_gain, true);
   }
 
-  void cancel_touch_scroll() {
-    std::lock_guard lock {scroll_mutex};
+  /** @brief Clear pending and active scroll state while holding scroll_mutex. */
+  static void clear_scroll_locked() {
     ++scroll_cancel_generation;
+    momentum_active = false;
     scroll_in_progress = false;
     scroll_velocity_x = 0;
     scroll_velocity_y = 0;
@@ -671,25 +676,59 @@ namespace platf::macos {
     last_input_time = {};
   }
 
-  bool touch_magnify(magnify_phase phase, double amount) {
+  void cancel_touch_scroll() {
+    std::lock_guard lock {scroll_mutex};
+    clear_scroll_locked();
+  }
+
+  bool brake_scroll_momentum() {
+    std::lock_guard lock {scroll_mutex};
+    if (scroll_diagnostics_trace) {
+      BOOST_LOG(info) << "macOS scroll trace: click brake"
+                      << " momentum_active=" << momentum_active
+                      << " scroll_in_progress=" << scroll_in_progress;
+    }
+    if (!momentum_active) {
+      return false;
+    }
+    clear_scroll_locked();
+    return true;
+  }
+
+  /**
+   * @brief Post an incremental gesture using the Quartz gesture fields.
+   * @param phase Gesture lifecycle phase.
+   * @param subtype Quartz gesture subtype.
+   * @param value_field Field carrying the gesture increment.
+   * @param amount Signed gesture increment.
+   * @return Whether the event was constructed and posted.
+   */
+  static bool post_touch_gesture(gesture_phase phase, int subtype, CGEventField value_field, double amount) {
     auto event = CGEventCreate(nullptr);
     if (!event) {
       return false;
     }
-    // Quartz magnify events use an undocumented gesture envelope.
+    // Quartz trackpad gestures use an undocumented gesture envelope.
     constexpr auto gesture_type = static_cast<CGEventType>(29);
     constexpr auto gesture_flags = static_cast<CGEventFlags>(0x100);
     constexpr auto gesture_subtype = static_cast<CGEventField>(0x6e);
     constexpr auto gesture_phase = static_cast<CGEventField>(0x84);
-    constexpr auto magnification = static_cast<CGEventField>(0x71);
     CGEventSetType(event, gesture_type);
     CGEventSetFlags(event, gesture_flags);
-    CGEventSetIntegerValueField(event, gesture_subtype, 8);
+    CGEventSetIntegerValueField(event, gesture_subtype, subtype);
     CGEventSetIntegerValueField(event, gesture_phase, static_cast<int>(phase));
-    CGEventSetDoubleValueField(event, magnification, amount);
+    CGEventSetDoubleValueField(event, value_field, amount);
     CGEventPost(kCGHIDEventTap, event);
     CFRelease(event);
     return true;
+  }
+
+  bool touch_magnify(gesture_phase phase, double amount) {
+    return post_touch_gesture(phase, 8, static_cast<CGEventField>(0x71), amount);
+  }
+
+  bool touch_rotate(gesture_phase phase, double degrees) {
+    return post_touch_gesture(phase, 5, static_cast<CGEventField>(0x72), degrees);
   }
 
 }  // namespace platf::macos

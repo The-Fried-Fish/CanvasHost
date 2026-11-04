@@ -24,6 +24,7 @@ extern "C" {
 // local includes
 #include "src/config.h"
 #include "src/input.h"
+#include "src/mac_trackpad_gesture.h"
 #include "src/pen_barrel_roll.h"
 #include "src/platform/virtualhid_input.h"
 #include "src/utility.h"
@@ -167,6 +168,17 @@ TEST(InputPacketValidationTest, ValidatesUnicodePacketBoundsWithoutOverflow) {
 
   const auto truncated_text = make_input_packet(UTF8_TEXT_EVENT_MAGIC, maximum_declared_size, sizeof(NV_INPUT_HEADER));
   EXPECT_FALSE(input::testing::is_valid_input_packet(truncated_text));
+}
+
+/** @brief Magnify and rotate use the same packet layout and length. */
+TEST(InputPacketValidationTest, ValidatesMacTrackpadGesturePacketSizes) {
+  using namespace input::mac_trackpad_wire;
+  constexpr auto size = sizeof(packet_t) - sizeof(std::uint32_t);
+  for (const auto magic : {magnify_magic, rotate_magic}) {
+    EXPECT_TRUE(input::testing::is_valid_input_packet(make_input_packet(magic, size, sizeof(packet_t))));
+    EXPECT_FALSE(input::testing::is_valid_input_packet(make_input_packet(magic, size, sizeof(packet_t) - 1)));
+    EXPECT_FALSE(input::testing::is_valid_input_packet(make_input_packet(magic, size - 1, sizeof(packet_t))));
+  }
 }
 
 TEST(InputPacketValidationTest, EnforcesEveryFixedPacketSize) {

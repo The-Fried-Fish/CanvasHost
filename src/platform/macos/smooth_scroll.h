@@ -44,8 +44,8 @@ namespace platf::macos {
    */
   void hscroll(int high_res_distance);
 
-  /** @brief Quartz magnify gesture phases. */
-  enum class magnify_phase { began = 1, changed = 2, ended = 4, cancelled = 8 };
+  /** @brief Phases for injected Quartz trackpad gestures. */
+  enum class gesture_phase { began = 1, changed = 2, ended = 4, cancelled = 8 };
 
   /**
    * @brief Post dominant-axis touchscreen scrolling.
@@ -58,10 +58,24 @@ namespace platf::macos {
   void cancel_touch_scroll();
 
   /**
+   * @brief Stop active host-generated scroll inertia.
+   * @return Whether an active inertia sequence was stopped.
+   */
+  bool brake_scroll_momentum();
+
+  /**
    * @brief Inject a native magnification event at the current cursor.
    * @param phase Gesture lifecycle phase.
    * @param amount Incremental magnification.
    * @return Whether the event was constructed and posted.
    */
-  bool touch_magnify(magnify_phase phase, double amount);
+  bool touch_magnify(gesture_phase phase, double amount);
+
+  /**
+   * @brief Inject a native rotation event at the current cursor.
+   * @param phase Gesture lifecycle phase.
+   * @param degrees Signed rotation increment in degrees.
+   * @return Whether the event was constructed and posted.
+   */
+  bool touch_rotate(gesture_phase phase, double degrees);
 }
