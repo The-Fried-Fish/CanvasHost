@@ -28,6 +28,10 @@ extern "C" {
 #include "src/platform/virtualhid_input.h"
 #include "src/utility.h"
 
+#ifdef __APPLE__
+  #include "src/platform/macos/native_touch_workaround.h"
+#endif
+
 namespace {
   /**
    * @brief Protocol metadata for a fixed-size input packet.
@@ -457,5 +461,102 @@ TEST_F(InputGamepadSessionTest, PenControlPacketsDoNotRequireCoordinates) {
     EXPECT_EQ(delivered.back().eventType, type);
   }
   input::testing::set_pen_sink({});
+}
+#endif
+
+#ifdef __APPLE__
+TEST(NativeTouchWorkaroundTest, RequiresNearbyTapsWithinTheDoubleClickWindow) {
+  using namespace std::chrono_literals;
+  using platf::macos::touch_is_double_tap;
+  EXPECT_TRUE(touch_is_double_tap({100, 100}, {112, 105}, {1000, 500}, 250ms));
+  EXPECT_FALSE(touch_is_double_tap({100, 100}, {112, 105}, {1000, 500}, 251ms));
+  EXPECT_FALSE(touch_is_double_tap({100, 100}, {100, 115}, {1000, 500}, 100ms));
+}
+
+TEST(NativeTouchWorkaroundTest, UsesSeparateTapAndNormalizedDragThresholds) {
+  EXPECT_TRUE(platf::macos::touch_is_stationary({0, 0}, {3, 3}));
+  EXPECT_FALSE(platf::macos::touch_is_stationary({0, 0}, {5, 0}));
+  EXPECT_FALSE(platf::macos::touch_exceeds_drag_threshold({0, 0}, {19, 0}, {1000, 500}));
+  EXPECT_TRUE(platf::macos::touch_exceeds_drag_threshold({0, 0}, {0, 11}, {1000, 500}));
+}
+
+TEST(NativeTouchWorkaroundTest, ClassifiesPinchAndDominantScrollAxis) {
+  using namespace platf::macos;
+  auto mode = touch_gesture_mode::undecided;
+  const auto horizontal = classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {4, 1}, {24, 1}), 0.01, mode);
+  EXPECT_EQ(horizontal.x, 4);
+  EXPECT_EQ(horizontal.y, 0);
+  EXPECT_EQ(horizontal.magnification, 0);
+
+  mode = touch_gesture_mode::undecided;
+  const auto vertical = classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {1, -5}, {21, -5}), 0.01, mode);
+  EXPECT_EQ(vertical.x, 0);
+  EXPECT_EQ(vertical.y, -5);
+  EXPECT_EQ(vertical.magnification, 0);
+
+  mode = touch_gesture_mode::undecided;
+  const auto pinch = classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {4, 1}, {16, 1}), 0.01, mode);
+  EXPECT_EQ(pinch.x, 0);
+  EXPECT_EQ(pinch.y, 0);
+  EXPECT_EQ(pinch.magnification, -8);
+}
+TEST(NativeTouchWorkaroundTest, RequiresFixedPinchSpeedAdvantage) {
+  using namespace platf::macos;
+  constexpr double sample_seconds = 0.02;
+  const auto threshold = magnify_speed_difference * sample_seconds;
+  auto mode = touch_gesture_mode::undecided;
+  classify_touch_motion({10, 0, 10 + threshold * 0.9}, sample_seconds, mode);
+  EXPECT_EQ(mode, touch_gesture_mode::horizontal);
+
+  mode = touch_gesture_mode::undecided;
+  classify_touch_motion({10, 0, 10 + threshold * 1.1}, sample_seconds, mode);
+  EXPECT_EQ(mode, touch_gesture_mode::magnify);
+}
+
+TEST(NativeTouchWorkaroundTest, OpposingSeparationUpdatesCancelAcrossTheWindow) {
+  using namespace platf::macos;
+  const auto first = measure_touch_motion({0, 0}, {20, 0}, {10, 0}, {20, 0});
+  const auto second = measure_touch_motion({10, 0}, {20, 0}, {10, 0}, {30, 0});
+  auto mode = touch_gesture_mode::undecided;
+  classify_touch_motion({first.x + second.x, first.y + second.y, first.magnification + second.magnification}, 0.035, mode);
+  EXPECT_EQ(mode, touch_gesture_mode::horizontal);
+}
+
+TEST(NativeTouchWorkaroundTest, FixedSpeedComparisonIsIndependentOfSampleDuration) {
+  using namespace platf::macos;
+  for (const double seconds : {1.0 / 60, 1.0 / 120}) {
+    for (const double advantage : {0.9, 1.1}) {
+      auto mode = touch_gesture_mode::undecided;
+      constexpr double midpoint_speed = 100;
+      classify_touch_motion({
+        midpoint_speed * seconds,
+        0,
+        (midpoint_speed + magnify_speed_difference * advantage) * seconds,
+      }, seconds, mode);
+      EXPECT_EQ(mode, advantage > 1 ? touch_gesture_mode::magnify : touch_gesture_mode::horizontal);
+    }
+  }
+}
+
+TEST(NativeTouchWorkaroundTest, PreservesLockedModeWhenMotionChanges) {
+  using namespace platf::macos;
+  auto mode = touch_gesture_mode::undecided;
+  classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {0, 0}, {20, 0}), 0.01, mode);
+  EXPECT_EQ(mode, touch_gesture_mode::undecided);
+
+  classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {4, 1}, {24, 1}), 0.01, mode);
+  ASSERT_EQ(mode, touch_gesture_mode::horizontal);
+  const auto scroll = classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {4, 10}, {18, 10}), 0.01, mode);
+  EXPECT_EQ(scroll.x, 1);
+  EXPECT_EQ(scroll.y, 0);
+  EXPECT_EQ(scroll.magnification, 0);
+
+  mode = touch_gesture_mode::undecided;
+  classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {-3, 0}, {23, 0}), 0.01, mode);
+  ASSERT_EQ(mode, touch_gesture_mode::magnify);
+  const auto pinch = classify_touch_motion(measure_touch_motion({0, 0}, {20, 0}, {3, 10}, {24, 10}), 0.01, mode);
+  EXPECT_EQ(pinch.x, 0);
+  EXPECT_EQ(pinch.y, 0);
+  EXPECT_EQ(pinch.magnification, 1);
 }
 #endif

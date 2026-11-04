@@ -3,6 +3,7 @@
  * @brief High-resolution pixel scrolling using immediate native macOS events.
  */
 
+#include "src/platform/macos/native_touch_workaround.h"
 #include "src/platform/macos/smooth_scroll.h"
 
 #import <ApplicationServices/ApplicationServices.h>
@@ -28,6 +29,7 @@ namespace platf::macos {
   namespace {
     std::chrono::steady_clock::time_point last_input_time {};
     bool scroll_in_progress = false;
+    std::uint64_t scroll_cancel_generation = 0;
     double scroll_velocity_y = 0.0;
     double scroll_velocity_x = 0.0;
 
@@ -356,6 +358,7 @@ namespace platf::macos {
           continue;
         }
 
+        const auto generation = scroll_cancel_generation;
         auto velocity_y = scroll_velocity_y;
         auto velocity_x = scroll_velocity_x;
         scroll_in_progress = false;
@@ -380,16 +383,6 @@ namespace platf::macos {
         auto previous_ticks = mach_absolute_time();
         auto next_ticks = previous_ticks + frame_ticks;
         while (!scroll_thread_stop.load(std::memory_order_relaxed)) {
-          lock.lock();
-          const bool interrupted = scroll_in_progress;
-          lock.unlock();
-          if (interrupted) {
-            if (scroll_diagnostics_enabled) {
-              scroll_diagnostics.momentum_cancelled.fetch_add(1, std::memory_order_relaxed);
-            }
-            break;
-          }
-
           const auto now_ticks = mach_absolute_time();
           const auto elapsed = static_cast<double>(now_ticks - previous_ticks) * nanoseconds_per_tick / 1'000'000'000.0;
           previous_ticks = now_ticks;
@@ -416,8 +409,17 @@ namespace platf::macos {
 
           pending_y += velocity_y * elapsed;
           pending_x += velocity_x * elapsed;
-          if (pending_y != 0.0 || pending_x != 0.0) {
-            post_event(pending_y, pending_x);
+          {
+            std::lock_guard state_lock {scroll_mutex};
+            if (scroll_in_progress || generation != scroll_cancel_generation) {
+              if (scroll_diagnostics_enabled) {
+                scroll_diagnostics.momentum_cancelled.fetch_add(1, std::memory_order_relaxed);
+              }
+              break;
+            }
+            if (pending_y != 0.0 || pending_x != 0.0) {
+              post_event(pending_y, pending_x);
+            }
           }
           pending_y = 0.0;
           pending_x = 0.0;
@@ -437,7 +439,7 @@ namespace platf::macos {
       }
     }
 
-    void post_pixel_scroll(double delta_y, double delta_x) {
+    void post_pixel_scroll(double delta_y, double delta_x, bool single_axis = false) {
       std::unique_lock<std::mutex> lock(scroll_mutex);
       const auto now = std::chrono::steady_clock::now();
       const bool has_previous_input = last_input_time.time_since_epoch().count() != 0;
@@ -511,6 +513,13 @@ namespace platf::macos {
       const auto window_velocity_x = window_total_dt > 0.0 ? window_dx / window_total_dt : 0.0;
       scroll_velocity_y = update_scroll_velocity(scroll_velocity_y, window_velocity_y * sample_dt, sample_dt, had_scroll);
       scroll_velocity_x = update_scroll_velocity(scroll_velocity_x, window_velocity_x * sample_dt, sample_dt, had_scroll);
+      if (single_axis) {
+        if (delta_x == 0) {
+          scroll_velocity_x = 0;
+        } else {
+          scroll_velocity_y = 0;
+        }
+      }
       const auto velocity_y = scroll_velocity_y;
       const auto velocity_x = scroll_velocity_x;
       scroll_in_progress = true;
@@ -646,6 +655,41 @@ namespace platf::macos {
       return;
     }
     post_pixel_scroll(0.0, delta_pixels);
+  }
+
+  void touch_scroll(double x, double y) {
+    post_pixel_scroll(y * touch_scroll_gain, x * touch_scroll_gain, true);
+  }
+
+  void cancel_touch_scroll() {
+    std::lock_guard lock {scroll_mutex};
+    ++scroll_cancel_generation;
+    scroll_in_progress = false;
+    scroll_velocity_x = 0;
+    scroll_velocity_y = 0;
+    scroll_samples.clear();
+    last_input_time = {};
+  }
+
+  bool touch_magnify(magnify_phase phase, double amount) {
+    auto event = CGEventCreate(nullptr);
+    if (!event) {
+      return false;
+    }
+    // Quartz magnify events use an undocumented gesture envelope.
+    constexpr auto gesture_type = static_cast<CGEventType>(29);
+    constexpr auto gesture_flags = static_cast<CGEventFlags>(0x100);
+    constexpr auto gesture_subtype = static_cast<CGEventField>(0x6e);
+    constexpr auto gesture_phase = static_cast<CGEventField>(0x84);
+    constexpr auto magnification = static_cast<CGEventField>(0x71);
+    CGEventSetType(event, gesture_type);
+    CGEventSetFlags(event, gesture_flags);
+    CGEventSetIntegerValueField(event, gesture_subtype, 8);
+    CGEventSetIntegerValueField(event, gesture_phase, static_cast<int>(phase));
+    CGEventSetDoubleValueField(event, magnification, amount);
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return true;
   }
 
 }  // namespace platf::macos

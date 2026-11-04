@@ -19,6 +19,7 @@ extern "C" {
 #include <cstring>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -40,6 +41,10 @@ extern "C" {
 #include "platform/virtualhid_input.h"
 #include "thread_pool.h"
 #include "utility.h"
+#ifdef __APPLE__
+  #include "platform/macos/native_touch_workaround.h"
+  #include "platform/macos/smooth_scroll.h"
+#endif
 
 // Win32 WHEEL_DELTA constant
 #ifndef WHEEL_DELTA
@@ -268,6 +273,37 @@ namespace input {
     bool right_pressed = false;  ///< Whether the right modifier key is pressed.
   };
 
+#ifdef __APPLE__
+  /** @brief Per-session nativeTouchWorkaround contact and button state. */
+  struct native_touch_state_t {
+    std::map<std::uint32_t, CGPoint> contacts;  ///< Active contacts in stable ID order.
+    std::chrono::steady_clock::time_point pair_sample_started {};  ///< Receipt time of the initial MOVE baseline.
+    std::chrono::steady_clock::time_point pair_sample_latest {};  ///< Receipt time of the last MOVE included in the estimate.
+    std::array<CGPoint, 2> previous_pair {};  ///< Pair positions after the last movement packet.
+    platf::macos::touch_motion_t pending_pair_motion {};  ///< Signed changes accumulated in the current window.
+    CGPoint origin {};  ///< Initial single-contact position.
+    CGSize extent {};  ///< Capture display dimensions for the drag threshold.
+    std::chrono::steady_clock::time_point down_time {};  ///< Start of the single-contact gesture.
+    bool cursor_started = false;  ///< Whether single-finger movement has been sent.
+    bool stationary = true;  ///< Whether the finger stayed within the tap dead zone.
+    bool right_clicked = false;  ///< Whether long press consumed the single-contact gesture.
+    CGPoint mouse_position {};  ///< Last single-contact position.
+    CGPoint last_tap_position {};  ///< Position of the previous eligible left click.
+    std::optional<std::chrono::steady_clock::time_point> last_tap_up;  ///< Previous eligible touch-up time.
+    int left_click_count = 1;  ///< Matching click count for both left-button transitions.
+    CGPoint right_position {};  ///< Position of a pending right-button release.
+    bool left_down = false;  ///< Whether the workaround owns a pressed left button.
+    bool multi_touch = false;  ///< Whether the current sequence has entered multi-touch.
+    platf::macos::touch_gesture_mode gesture_mode = platf::macos::touch_gesture_mode::undecided;  ///< Locked two-finger output mode.
+    bool magnifying = false;  ///< Whether Quartz received a magnify begin.
+    thread_pool_util::ThreadPool::task_id_t cursor_task = nullptr;  ///< Deadline for the second finger to join before moving the cursor.
+    thread_pool_util::ThreadPool::task_id_t tap_task = nullptr;  ///< Short left-click release deadline.
+    thread_pool_util::ThreadPool::task_id_t hold_task = nullptr;  ///< Long-press deadline.
+    thread_pool_util::ThreadPool::task_id_t right_task = nullptr;  ///< Right-button release deadline.
+    thread_pool_util::ThreadPool::task_id_t sample_task = nullptr;  ///< Two-contact sample deadline.
+  };
+#endif
+
   /**
    * @brief Input emulation settings loaded from configuration.
    */
@@ -326,6 +362,7 @@ namespace input {
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
 
 #ifdef __APPLE__
+    native_touch_state_t native_touch;  ///< Touchscreen compatibility state.
     bool relative_mouse_positioned = false;  ///< Whether the remote relative mouse has started on the capture display.
 #endif
     input::touch_port_t touch_port;  ///< Touch coordinate bounds for the current stream.
@@ -1470,12 +1507,318 @@ namespace input {
     return absolute_pointer_data_t {*touch_port, *coords, rotation, contact_area};
   }
 
+#ifdef __APPLE__
+  /**
+   * @brief Post an absolute mouse event at a touchscreen coordinate.
+   * @param type Quartz mouse event type.
+   * @param position Global cursor position.
+   * @param button Mouse button associated with the event.
+   * @param click_count Number of clicks in the current sequence.
+   */
+  void post_native_touch_mouse(CGEventType type, CGPoint position, CGMouseButton button = kCGMouseButtonLeft, int click_count = 1) {
+    if (auto event = CGEventCreateMouseEvent(nullptr, type, position, button)) {
+      CGEventSetIntegerValueField(event, kCGMouseEventClickState, click_count);
+      CGEventPost(kCGHIDEventTap, event);
+      CFRelease(event);
+      if (type == kCGEventLeftMouseDown || type == kCGEventLeftMouseDragged || type == kCGEventMouseMoved) {
+        CGWarpMouseCursorPosition(position);
+      }
+    }
+  }
+
+  /**
+   * @brief End a pending long press and release the touch-owned left button.
+   * @param state Touchscreen compatibility state.
+   */
+  void release_native_touch_left(native_touch_state_t &state) {
+    if (state.cursor_task) {
+      task_pool.cancel(state.cursor_task);
+      state.cursor_task = nullptr;
+    }
+    if (state.hold_task) {
+      task_pool.cancel(state.hold_task);
+      state.hold_task = nullptr;
+    }
+    if (state.tap_task) {
+      task_pool.cancel(state.tap_task);
+      state.tap_task = nullptr;
+    }
+    if (state.left_down) {
+      post_native_touch_mouse(kCGEventLeftMouseUp, state.mouse_position, kCGMouseButtonLeft, state.left_click_count);
+      state.left_click_count = 1;
+      state.left_down = false;
+    }
+  }
+
+  /**
+   * @brief Release a touch-owned right button and cancel its delayed release.
+   * @param state Touchscreen compatibility state.
+   */
+  void release_native_touch_right(native_touch_state_t &state) {
+    if (state.right_task) {
+      task_pool.cancel(state.right_task);
+      state.right_task = nullptr;
+      post_native_touch_mouse(kCGEventRightMouseUp, state.right_position, kCGMouseButtonRight);
+    }
+  }
+
+  /**
+   * @brief End a magnify sequence if one is active.
+   * @param state Touchscreen compatibility state.
+   * @param cancelled Whether to cancel the gesture.
+   */
+  void finish_native_touch_magnify(native_touch_state_t &state, bool cancelled) {
+    if (state.magnifying) {
+      using platf::macos::magnify_phase;
+      platf::macos::touch_magnify(cancelled ? magnify_phase::cancelled : magnify_phase::ended, 0);
+      state.magnifying = false;
+    }
+  }
+
+  /**
+   * @brief Consume the latest positions of both contacts together.
+   * @param state Touchscreen compatibility state.
+   */
+  void sample_native_touch_pair(native_touch_state_t &state) {
+    const auto displacement = std::exchange(state.pending_pair_motion, {});
+    const auto sample_seconds = std::chrono::duration<double>(state.pair_sample_latest - state.pair_sample_started).count();
+    if (state.gesture_mode == platf::macos::touch_gesture_mode::undecided && sample_seconds <= 0) {
+      return;
+    }
+    const auto motion = platf::macos::classify_touch_motion(displacement, sample_seconds, state.gesture_mode);
+    if (motion.magnification != 0) {
+      using platf::macos::magnify_phase;
+      if (!state.magnifying) {
+        platf::macos::cancel_touch_scroll();
+        state.magnifying = platf::macos::touch_magnify(magnify_phase::began, 0);
+      }
+      if (state.magnifying) {
+        platf::macos::touch_magnify(magnify_phase::changed, std::expm1(motion.magnification / 300));
+      }
+    } else if (motion.x != 0 || motion.y != 0) {
+      platf::macos::touch_scroll(motion.x, motion.y);
+    }
+  }
+
+  /**
+   * @brief Apply nativeTouchWorkaround to a touchscreen contact packet.
+   * @param input Stream input context.
+   * @param packet Contact packet.
+   */
+  void native_touch_workaround(std::shared_ptr<input_t> &input, PSS_TOUCH_PACKET packet) {
+    auto &state = input->native_touch;
+    const auto id = util::endian::little(packet->pointerId);
+    const auto type = packet->eventType;
+    const bool release = type == LI_TOUCH_EVENT_UP || type == LI_TOUCH_EVENT_CANCEL || type == LI_TOUCH_EVENT_CANCEL_ALL;
+    if (type != LI_TOUCH_EVENT_DOWN && type != LI_TOUCH_EVENT_MOVE && !release) {
+      return;
+    }
+    if (type != LI_TOUCH_EVENT_DOWN && type != LI_TOUCH_EVENT_CANCEL_ALL && !state.contacts.contains(id)) {
+      return;
+    }
+
+    if (type == LI_TOUCH_EVENT_DOWN && (state.contacts.size() >= 16 || state.contacts.contains(id))) {
+      return;
+    }
+
+    if (release || type == LI_TOUCH_EVENT_DOWN) {
+      if (state.sample_task) {
+        task_pool.cancel(state.sample_task);
+        state.sample_task = nullptr;
+        if (state.gesture_mode != platf::macos::touch_gesture_mode::undecided &&
+            type != LI_TOUCH_EVENT_CANCEL && type != LI_TOUCH_EVENT_CANCEL_ALL) {
+          sample_native_touch_pair(state);
+        } else {
+          state.pending_pair_motion = {};
+        }
+      }
+    }
+
+    constexpr auto drag_delay = 100ms;
+    const auto weak_input = std::weak_ptr {input};
+    std::optional<CGPoint> position;
+    CGSize extent {};
+    if (type == LI_TOUCH_EVENT_DOWN || type == LI_TOUCH_EVENT_MOVE || type == LI_TOUCH_EVENT_UP) {
+      if (auto data = prepare_absolute_pointer_data(input, packet)) {
+        const auto &port = data->touch_port;
+        const auto bounds = port.native_display_id
+          ? CGDisplayBounds(port.native_display_id)
+          : CGRectMake(port.offset_x, port.offset_y, port.width, port.height);
+        const auto [x, y] = data->coords;
+        if (!CGRectIsEmpty(bounds) && std::isfinite(x) && std::isfinite(y)) {
+          extent = bounds.size;
+          position = CGPointMake(bounds.origin.x + std::clamp(x, 0.f, 1.f) * (bounds.size.width - 1),
+                                 bounds.origin.y + std::clamp(y, 0.f, 1.f) * (bounds.size.height - 1));
+        }
+      }
+    }
+
+    if (release) {
+      const auto up_time = std::chrono::steady_clock::now();
+      const bool tap = type == LI_TOUCH_EVENT_UP && position && !state.multi_touch &&
+                       !state.left_down && !state.right_clicked && state.stationary &&
+                       platf::macos::touch_is_stationary(state.origin, *position) &&
+                       up_time - state.down_time < drag_delay;
+      if (position && !state.multi_touch && state.left_down) {
+        state.mouse_position = *position;
+      }
+      if (!state.multi_touch) {
+        release_native_touch_left(state);
+      }
+      if (tap) {
+        const bool double_tap = state.last_tap_up && platf::macos::touch_is_double_tap(
+          state.last_tap_position, *position, extent, state.down_time - *state.last_tap_up
+        );
+        state.left_click_count = double_tap ? 2 : 1;
+        state.mouse_position = double_tap ? state.last_tap_position : *position;
+        state.last_tap_position = state.mouse_position;
+        state.last_tap_up = double_tap ? std::nullopt : std::optional {up_time};
+        post_native_touch_mouse(kCGEventLeftMouseDown, state.mouse_position, kCGMouseButtonLeft, state.left_click_count);
+        state.left_down = true;
+        state.tap_task = task_pool.pushDelayed([weak_input]() {
+          if (auto input = weak_input.lock()) {
+            auto &state = input->native_touch;
+            state.tap_task = nullptr;
+            release_native_touch_left(state);
+          }
+        }, 30ms).task_id;
+      } else {
+        state.last_tap_up.reset();
+      }
+      if (type == LI_TOUCH_EVENT_CANCEL_ALL) {
+        state.contacts.clear();
+      } else {
+        state.contacts.erase(id);
+      }
+      if (state.contacts.empty()) {
+        finish_native_touch_magnify(state, type != LI_TOUCH_EVENT_UP);
+        state.gesture_mode = platf::macos::touch_gesture_mode::undecided;
+        state.multi_touch = false;
+      } else if (state.contacts.size() == 2) {
+        platf::macos::cancel_touch_scroll();
+        state.previous_pair = {state.contacts.begin()->second, std::next(state.contacts.begin())->second};
+      }
+      return;
+    }
+    if (!position) {
+      return;
+    }
+
+    if (type == LI_TOUCH_EVENT_DOWN) {
+      state.contacts.emplace(id, *position);
+      if (state.contacts.size() > 1) {
+        if (!state.multi_touch) {
+          release_native_touch_left(state);
+          release_native_touch_right(state);
+          state.multi_touch = true;
+        }
+        if (state.contacts.size() == 2) {
+          platf::macos::cancel_touch_scroll();
+          state.previous_pair = {state.contacts.begin()->second, std::next(state.contacts.begin())->second};
+        }
+        return;
+      }
+      release_native_touch_left(state);
+      state.origin = state.mouse_position = *position;
+      state.extent = extent;
+      state.down_time = std::chrono::steady_clock::now();
+      state.cursor_started = false;
+      state.stationary = true;
+      state.right_clicked = false;
+      state.cursor_task = task_pool.pushDelayed([weak_input]() {
+        if (auto input = weak_input.lock()) {
+          auto &state = input->native_touch;
+          state.cursor_task = nullptr;
+          if (!state.multi_touch && !platf::macos::touch_is_stationary(state.origin, state.mouse_position)) {
+            post_native_touch_mouse(kCGEventMouseMoved, state.mouse_position);
+            state.cursor_started = true;
+          }
+        }
+      }, platf::macos::touch_cursor_wait).task_id;
+      state.hold_task = task_pool.pushDelayed([weak_input]() {
+        if (auto input = weak_input.lock()) {
+          auto &state = input->native_touch;
+          state.hold_task = nullptr;
+          if (!state.stationary || state.multi_touch) {
+            return;
+          }
+          release_native_touch_left(state);
+          state.right_clicked = true;
+          state.right_position = state.mouse_position;
+          post_native_touch_mouse(kCGEventMouseMoved, state.right_position);
+          post_native_touch_mouse(kCGEventRightMouseDown, state.right_position, kCGMouseButtonRight);
+          state.right_task = task_pool.pushDelayed([weak_input]() {
+            if (auto input = weak_input.lock()) {
+              auto &state = input->native_touch;
+              state.right_task = nullptr;
+              post_native_touch_mouse(kCGEventRightMouseUp, state.right_position, kCGMouseButtonRight);
+            }
+          }, 10ms).task_id;
+        }
+      }, 650ms).task_id;
+      return;
+    }
+
+    state.contacts.at(id) = *position;
+    if (state.contacts.size() == 2) {
+      const auto a = state.contacts.begin()->second;
+      const auto b = std::next(state.contacts.begin())->second;
+      const auto received = std::chrono::steady_clock::now();
+      const bool undecided = state.gesture_mode == platf::macos::touch_gesture_mode::undecided;
+      if (!undecided || state.sample_task) {
+        const auto delta = platf::macos::measure_touch_motion(state.previous_pair[0], state.previous_pair[1], a, b);
+        state.pending_pair_motion.x += delta.x;
+        state.pending_pair_motion.y += delta.y;
+        state.pending_pair_motion.magnification += delta.magnification;
+      }
+      state.previous_pair = {a, b};
+      state.pair_sample_latest = received;
+
+      if (!state.sample_task) {
+        state.pair_sample_started = received;
+        const auto delay = undecided
+          ? platf::macos::touch_gesture_decision_window
+          : platf::macos::touch_gesture_output_interval;
+        state.sample_task = task_pool.pushDelayed([weak_input]() {
+          if (auto input = weak_input.lock()) {
+            auto &state = input->native_touch;
+            state.sample_task = nullptr;
+            sample_native_touch_pair(state);
+          }
+        }, delay).task_id;
+      }
+    } else if (!state.multi_touch && !state.right_clicked) {
+      state.stationary &= platf::macos::touch_is_stationary(state.origin, *position);
+      if (platf::macos::touch_exceeds_drag_threshold(state.origin, *position, state.extent)) {
+        if (state.hold_task) {
+          task_pool.cancel(state.hold_task);
+          state.hold_task = nullptr;
+        }
+        if (!state.left_down && std::chrono::steady_clock::now() - state.down_time > drag_delay) {
+          post_native_touch_mouse(kCGEventLeftMouseDown, state.mouse_position);
+          state.left_down = true;
+        }
+      }
+      state.mouse_position = *position;
+      if (!state.cursor_task && (state.cursor_started || !platf::macos::touch_is_stationary(state.origin, *position))) {
+        post_native_touch_mouse(state.left_down ? kCGEventLeftMouseDragged : kCGEventMouseMoved, *position);
+        state.cursor_started = true;
+      }
+    }
+  }
+#endif
+
   /**
    * @brief Called to pass a touch message to the platform backend.
    * @param input The input context pointer.
    * @param packet The touch packet.
    */
   void passthrough(std::shared_ptr<input_t> &input, PSS_TOUCH_PACKET packet) {
+#ifdef __APPLE__
+    if (config::input.mouse && config::input.native_pen_touch) {
+      native_touch_workaround(input, packet);
+    }
+#else
     const auto pointer_data = prepare_absolute_pointer_data(input, packet);
     if (!pointer_data) {
       return;
@@ -1493,6 +1836,7 @@ namespace input {
     };
 
     platf::touch_update(input->client_context.get(), pointer_data->touch_port, touch);
+#endif
   }
 
   /**
@@ -2101,7 +2445,11 @@ namespace input {
       case MULTI_CONTROLLER_MAGIC_GEN5:
         return batch((PNV_MULTI_CONTROLLER_PACKET) dest, (PNV_MULTI_CONTROLLER_PACKET) src);
       case SS_TOUCH_MAGIC:
+#ifdef __APPLE__
+        return batch_result_e::terminate_batch;
+#else
         return batch((PSS_TOUCH_PACKET) dest, (PSS_TOUCH_PACKET) src);
+#endif
       case SS_PEN_MAGIC:
         return batch((PSS_PEN_PACKET) dest, (PSS_PEN_PACKET) src);
       case pen_wire::magic:
@@ -2588,6 +2936,14 @@ namespace input {
     reset_keyboard_keys();
     reset_gamepads(input);
 #ifdef __APPLE__
+    auto &touch = input->native_touch;
+    release_native_touch_left(touch);
+    finish_native_touch_magnify(touch, true);
+    if (touch.sample_task) {
+      task_pool.cancel(touch.sample_task);
+    }
+    release_native_touch_right(touch);
+    touch = {};
     // Retained client contexts survive disconnect, so their pen must explicitly leave range.
     platf::pen_input_t pen {};
     pen.eventType = LI_TOUCH_EVENT_CANCEL_ALL;

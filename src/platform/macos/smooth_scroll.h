@@ -43,4 +43,25 @@ namespace platf::macos {
    * @param high_res_distance Scroll distance in protocol units.
    */
   void hscroll(int high_res_distance);
+
+  /** @brief Quartz magnify gesture phases. */
+  enum class magnify_phase { began = 1, changed = 2, ended = 4, cancelled = 8 };
+
+  /**
+   * @brief Post dominant-axis touchscreen scrolling.
+   * @param x Horizontal finger displacement in Quartz points.
+   * @param y Vertical finger displacement in Quartz points.
+   */
+  void touch_scroll(double x, double y);
+
+  /** @brief Stop pending scroll inertia when a pinch begins. */
+  void cancel_touch_scroll();
+
+  /**
+   * @brief Inject a native magnification event at the current cursor.
+   * @param phase Gesture lifecycle phase.
+   * @param amount Incremental magnification.
+   * @return Whether the event was constructed and posted.
+   */
+  bool touch_magnify(magnify_phase phase, double amount);
 }
