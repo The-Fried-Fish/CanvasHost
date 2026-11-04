@@ -9,6 +9,10 @@
 #import <Block.h>
 #import <os/lock.h>
 
+CMTime SCCaptureMinimumFrameInterval(int32_t requested_fps, double display_hz) {
+  return requested_fps > 0 && requested_fps == display_hz ? kCMTimeZero : CMTimeMake(1, requested_fps);
+}
+
 API_AVAILABLE(macos(12.3))
 @implementation SCCapture {
   /// Guards the scalar capture settings and the cached callbacks, which are written from
@@ -247,7 +251,12 @@ API_AVAILABLE(macos(12.3))
 
         config.width = captureWidth;
         config.height = captureHeight;
-        config.minimumFrameInterval = CMTimeMake(1, captureFrameRate);
+        CGDisplayModeRef displayMode = CGDisplayCopyDisplayMode(display.displayID);
+        const double displayRefreshRate = displayMode ? CGDisplayModeGetRefreshRate(displayMode) : 0.0;
+        if (displayMode) {
+            CGDisplayModeRelease(displayMode);
+        }
+        config.minimumFrameInterval = SCCaptureMinimumFrameInterval(captureFrameRate, displayRefreshRate);
         config.pixelFormat = capturePixelFormat;
         // The capture thread keeps a pool of images plus frames in flight through the encoder.
         // A queue shallower than that lets ScreenCaptureKit recycle buffers that are still

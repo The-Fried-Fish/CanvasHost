@@ -9,6 +9,14 @@
 #import <ScreenCaptureKit/ScreenCaptureKit.h>
 #import <CoreMedia/CoreMedia.h>
 
+/**
+ * @brief Choose the minimum interval for ScreenCaptureKit updates.
+ * @param requested_fps Client-requested frame rate.
+ * @param display_hz Nominal refresh rate of the captured display, or zero if unknown.
+ * @return Zero to let ScreenCaptureKit follow a matching display rate, otherwise the requested interval.
+ */
+FOUNDATION_EXPORT CMTime SCCaptureMinimumFrameInterval(int32_t requested_fps, double display_hz);
+
 API_AVAILABLE(macos(12.3))
 @interface SCCapture : NSObject <SCStreamDelegate, SCStreamOutput>
 
