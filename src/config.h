@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <optional>
@@ -417,6 +418,22 @@ namespace config {
   extern stream_t stream;
   extern nvhttp_t nvhttp;
   extern input_t input;
+
+  /** @brief Native macOS pen injection policy for a complete stroke. */
+  enum class penInjectMode {
+    regular,
+    tablet,
+    mixed,
+  };
+  inline constexpr auto default_pen_inject_mode = penInjectMode::regular;  ///< Compatible with standard macOS dragging.
+  extern std::atomic<penInjectMode> pen_inject_mode;  ///< Live policy sampled at the start of each stroke.
+
+  /**
+   * @brief Parse a pen injection mode stored in the configuration.
+   * @param value Configuration value.
+   * @return The matching mode, or no value for an unsupported string.
+   */
+  std::optional<penInjectMode> parse_pen_inject_mode(std::string_view value);
   extern sunshine_t sunshine;
 
 #ifdef SUNSHINE_TESTS

@@ -167,6 +167,9 @@ namespace confighttp {
   void resetPortalToken(const resp_https_t &response, const req_https_t &request);
 
 #ifdef SUNSHINE_TESTS
+  /** @brief Save configuration through the production HTTP handler. */
+  void saveConfig(const resp_https_t &response, const req_https_t &request);
+
   using virtual_input_license_status_provider_t = std::function<lvh::LicenseResult()>;  ///< Test provider for current libvirtualhid license status.
   using portal_token_path_provider_t = std::function<std::filesystem::path()>;  ///< Test provider for the XDG Portal token path.
 

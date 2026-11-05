@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string_view>
@@ -1564,6 +1565,24 @@ namespace confighttp {
       std::stringstream config_stream;
       nlohmann::json output_tree;
       nlohmann::json input_tree = nlohmann::json::parse(ss);
+#ifdef __APPLE__
+      auto pen_mode = config::default_pen_inject_mode;
+      if (auto it = input_tree.find("pen_inject_mode"); it != input_tree.end() && !it->is_null()) {
+        if (!it->is_string()) {
+          bad_request(response, request, "Invalid pen injection mode");
+          return;
+        }
+        const auto &value = it->get_ref<const std::string &>();
+        if (!value.empty()) {
+          const auto parsed = config::parse_pen_inject_mode(value);
+          if (!parsed) {
+            bad_request(response, request, "Invalid pen injection mode");
+            return;
+          }
+          pen_mode = *parsed;
+        }
+      }
+#endif
       for (const auto &[k, v] : input_tree.items()) {
         if (v.is_null() || (v.is_string() && v.get<std::string>().empty())) {
           continue;
@@ -1573,7 +1592,20 @@ namespace confighttp {
         // we should migrate the config file to straight JSON and get rid of all this nonsense
         config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
       }
-      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+      {
+        static std::mutex save_mutex;
+        std::lock_guard lock {save_mutex};
+        std::ofstream config_file {config::sunshine.config_file};
+        config_file << config_stream.str();
+        config_file.close();
+        if (!config_file) {
+          bad_request(response, request, "Unable to save configuration");
+          return;
+        }
+#ifdef __APPLE__
+        config::pen_inject_mode.store(pen_mode, std::memory_order_relaxed);
+#endif
+      }
       output_tree["status"] = true;
       send_response(response, output_tree);
     } catch (std::exception &e) {

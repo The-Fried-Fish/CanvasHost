@@ -238,6 +238,16 @@ watch(
               v-model="config.native_pen_touch"
               default="true"
     ></Checkbox>
+    <div v-if="platform === 'macos' && config.mouse === 'enabled' && config.native_pen_touch === 'enabled'"
+         class="mb-3">
+      <label for="pen_inject_mode" class="form-label">{{ $t('config.pen_inject_mode') }}</label>
+      <select id="pen_inject_mode" class="form-select" v-model="config.pen_inject_mode">
+        <option value="regular">{{ $t('config.pen_inject_mode_regular') }}</option>
+        <option value="mixed">{{ $t('config.pen_inject_mode_mixed') }}</option>
+        <option value="tablet">{{ $t('config.pen_inject_mode_tablet') }}</option>
+      </select>
+      <div class="form-text">{{ $t('config.pen_inject_mode_desc') }}</div>
+    </div>
   </div>
 </template>
 

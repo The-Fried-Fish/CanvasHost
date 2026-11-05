@@ -32,6 +32,7 @@ extern "C" {
 #include <boost/endian/buffers.hpp>
 
 // local includes
+#include "apple_pencil_side_buttons.h"
 #include "config.h"
 #include "globals.h"
 #include "input.h"
@@ -44,6 +45,7 @@ extern "C" {
 #include "utility.h"
 #ifdef __APPLE__
   #include "platform/macos/native_touch_workaround.h"
+  #include "platform/macos/pen.h"
   #include "platform/macos/smooth_scroll.h"
 #endif
 
@@ -353,7 +355,12 @@ namespace input {
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;  ///< Touch port event.
     platf::feedback_queue_t feedback_queue;  ///< Queue used to deliver controller feedback to the platform backend.
 
-    std::list<std::vector<uint8_t>> input_queue;  ///< Validated input packets waiting for processing.
+    /** @brief A validated packet and its receipt time when used by native pen input. */
+    struct queued_input_t {
+      std::vector<uint8_t> bytes;  ///< Validated wire payload.
+      std::chrono::steady_clock::time_point received_at {};  ///< Host arrival time for macOS pen packets.
+    };
+    std::list<queued_input_t> input_queue;  ///< Validated input packets waiting for processing.
     std::mutex input_queue_lock;  ///< Input queue lock.
     pen_wire::roll_probe_t pen_roll_probe;  ///< Per-session hardware observations, protected by the queue lock.
     std::uint64_t input_generation = 0;  ///< Prevent old queued tasks from consuming resumed-session packets.
@@ -363,6 +370,7 @@ namespace input {
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;  ///< Mouse left button timeout.
 
 #ifdef __APPLE__
+    std::optional<CGPoint> apple_pencil_squeeze_position;  ///< Start location of the active squeeze.
     bool mac_magnify_active = false;  ///< Whether the client has an active Quartz magnification.
     bool mac_rotate_active = false;  ///< Whether the client has an active Quartz rotation.
     bool scroll_brake_left_down = false;  ///< Left press consumed to brake inertia, awaiting release.
@@ -1589,6 +1597,57 @@ namespace input {
   }
 
   /**
+   * @brief Deliver Apple Pencil gestures using the same display mapping as native pen input.
+   * @param input Stream input context.
+   * @param packet Apple Pencil side gesture.
+   */
+  void passthrough(std::shared_ptr<input_t> &input, const apple_pencil_wire::packet_t &packet) {
+    if (!config::input.mouse) {
+      return;
+    }
+
+    using enum apple_pencil_wire::event_t;
+    auto &squeeze_position = input->apple_pencil_squeeze_position;
+    switch (packet.event) {
+      case double_tap:
+      case squeeze_begin:
+        {
+          if (packet.event == squeeze_begin && squeeze_position) {
+            break;
+          }
+          const float x = from_netfloat(packet.x);
+          const float y = from_netfloat(packet.y);
+          if (!std::isfinite(x) || !std::isfinite(y)) {
+            break;
+          }
+          auto coords = client_to_touchport(input, {x, y}, {1.f, 1.f});
+          if (!coords) {
+            break;
+          }
+          const auto viewport = monitor_touch_port(input->touch_port, *coords);
+          if (!viewport) {
+            break;
+          }
+          const auto position = platf::macos::pen_display_location(*viewport, coords->first, coords->second);
+          if (position && platf::macos::post_apple_pencil_gesture(packet.event, *position) && packet.event == squeeze_begin) {
+            squeeze_position = position;
+          }
+          break;
+        }
+      case squeeze_change:
+      case squeeze_end:
+      case squeeze_cancel:
+        if (squeeze_position) {
+          platf::macos::post_apple_pencil_gesture(packet.event, *squeeze_position);
+          if (packet.event != squeeze_change) {
+            squeeze_position.reset();
+          }
+        }
+        break;
+    }
+  }
+
+  /**
    * @brief Forward a macOS trackpad gesture to Quartz.
    * @param input Stream input context.
    * @param packet Gesture packet.
@@ -1907,8 +1966,9 @@ namespace input {
    * @param input The input context pointer.
    * @param packet The pen packet.
    * @param barrel_roll Resolved independent barrel roll, or unknown for legacy azimuth fallback.
+   * @param received_at Host receipt timestamp used for macOS stroke startup.
    */
-  void passthrough(std::shared_ptr<input_t> &input, PSS_PEN_PACKET packet, std::uint16_t barrel_roll = pen_wire::unknown) {
+  void passthrough(std::shared_ptr<input_t> &input, PSS_PEN_PACKET packet, std::uint16_t barrel_roll, std::chrono::steady_clock::time_point received_at) {
 #ifdef __APPLE__
     // Quartz retains the last valid point for events without coordinates.
     if (packet->eventType == LI_TOUCH_EVENT_CANCEL_ALL || packet->eventType == LI_TOUCH_EVENT_CANCEL || packet->eventType == LI_TOUCH_EVENT_HOVER_LEAVE || packet->eventType == LI_TOUCH_EVENT_BUTTON_ONLY) {
@@ -1939,6 +1999,7 @@ namespace input {
     };
 
     pen.barrelRoll = barrel_roll == pen_wire::unknown ? pen.rotation : barrel_roll;
+    pen.received_at = received_at;
     emit_pen(input, pointer_data->touch_port, pen);
   }
 
@@ -2222,6 +2283,8 @@ namespace input {
         return declared_size - sizeof(header.magic) <= UTF8_TEXT_EVENT_MAX_COUNT;
       case MULTI_CONTROLLER_MAGIC_GEN5:
         return validate_fixed_input_packet<NV_MULTI_CONTROLLER_PACKET>(packet, declared_size);
+      case apple_pencil_wire::magic:
+        return packet.size() == sizeof(apple_pencil_wire::packet_t) && validate_fixed_input_packet<apple_pencil_wire::packet_t>(packet, declared_size);
       case mac_trackpad_wire::magnify_magic:
       case mac_trackpad_wire::rotate_magic:
         return validate_fixed_input_packet<mac_trackpad_wire::packet_t>(packet, declared_size);
@@ -2393,6 +2456,7 @@ namespace input {
     return batch_result_e::batched;
   }
 
+#ifndef __APPLE__
   /**
    * @brief Batch two pen messages.
    * @param dest The original packet to batch into.
@@ -2424,6 +2488,7 @@ namespace input {
     *dest = *src;
     return batch_result_e::batched;
   }
+#endif
 
   /**
    * @brief Batch two controller touch messages.
@@ -2516,6 +2581,11 @@ namespace input {
 #else
         return batch((PSS_TOUCH_PACKET) dest, (PSS_TOUCH_PACKET) src);
 #endif
+#ifdef __APPLE__
+      case SS_PEN_MAGIC:
+      case pen_wire::magic:
+        return batch_result_e::terminate_batch;
+#else
       case SS_PEN_MAGIC:
         return batch((PSS_PEN_PACKET) dest, (PSS_PEN_PACKET) src);
       case pen_wire::magic:
@@ -2529,6 +2599,7 @@ namespace input {
           }
           return result;
         }
+#endif
       case SS_CONTROLLER_TOUCH_MAGIC:
         return batch((PSS_CONTROLLER_TOUCH_PACKET) dest, (PSS_CONTROLLER_TOUCH_PACKET) src);
       case SS_CONTROLLER_MOTION_MAGIC:
@@ -2772,7 +2843,7 @@ namespace input {
    */
   void passthrough_next_message(std::shared_ptr<input_t> input, std::uint64_t generation) {
     // 'entry' backs the 'payload' pointer, so they must remain in scope together
-    std::vector<uint8_t> entry;
+    input_t::queued_input_t entry;
     PNV_INPUT_HEADER payload;
     uint64_t scroll_merged_away = 0;  ///< Scroll packets folded into the one being sent.
 
@@ -2788,15 +2859,14 @@ namespace input {
       }
 
       // Pop off the first entry, which we will send
-      entry = input->input_queue.front();
-      payload = (PNV_INPUT_HEADER) entry.data();
+      entry = std::move(input->input_queue.front());
+      payload = (PNV_INPUT_HEADER) entry.bytes.data();
       input->input_queue.pop_front();
 
       // Try to batch with remaining items on the queue
       auto i = input->input_queue.begin();
       while (i != input->input_queue.end()) {
-        auto batchable_entry = *i;
-        auto batchable_payload = (PNV_INPUT_HEADER) batchable_entry.data();
+        auto batchable_payload = (PNV_INPUT_HEADER) i->bytes.data();
 
         auto batch_result = batch(payload, batchable_payload);
         if (batch_result == batch_result_e::terminate_batch) {
@@ -2855,6 +2925,9 @@ namespace input {
         passthrough(input, (PNV_MULTI_CONTROLLER_PACKET) payload);
         break;
 #ifdef __APPLE__
+      case apple_pencil_wire::magic:
+        passthrough(input, *reinterpret_cast<const apple_pencil_wire::packet_t *>(payload));
+        break;
       case mac_trackpad_wire::magnify_magic:
       case mac_trackpad_wire::rotate_magic:
         passthrough(input, *reinterpret_cast<const mac_trackpad_wire::packet_t *>(payload), type == mac_trackpad_wire::rotate_magic);
@@ -2864,12 +2937,12 @@ namespace input {
         passthrough(input, (PSS_TOUCH_PACKET) payload);
         break;
       case SS_PEN_MAGIC:
-        passthrough(input, (PSS_PEN_PACKET) payload);
+        passthrough(input, (PSS_PEN_PACKET) payload, pen_wire::unknown, entry.received_at);
         break;
       case pen_wire::magic:
         {
           auto packet = reinterpret_cast<pen_wire::packet_t *>(payload);
-          passthrough(input, &packet->pen, pen_wire::decode_roll(packet->barrelRoll));
+          passthrough(input, &packet->pen, pen_wire::decode_roll(packet->barrelRoll), entry.received_at);
           break;
         }
       case SS_CONTROLLER_ARRIVAL_MAGIC:
@@ -2923,12 +2996,18 @@ namespace input {
       note_scroll_packet_received();
     }
 
+    const auto magic = util::endian::little(header.magic);
+    std::chrono::steady_clock::time_point received_at;
+#ifdef __APPLE__
+    if (magic == SS_PEN_MAGIC || magic == pen_wire::magic) {
+      received_at = std::chrono::steady_clock::now();
+    }
+#endif
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
       if (input->input_stopped) {
         return;
       }
-      const auto magic = util::endian::little(header.magic);
       if (magic == SS_PEN_MAGIC) {
         input->pen_roll_probe.reset();
       } else if (magic == pen_wire::magic) {
@@ -2939,7 +3018,7 @@ namespace input {
           pen_wire::decode_roll(packet.pen.rotation)
         ));
       }
-      input->input_queue.push_back(std::move(input_data));
+      input->input_queue.push_back({std::move(input_data), received_at});
       task_pool.push(passthrough_next_message, input, input->input_generation);
     }
   }
@@ -3010,6 +3089,10 @@ namespace input {
     reset_gamepads(input);
 #ifdef __APPLE__
     input->scroll_brake_left_down = false;
+    if (input->apple_pencil_squeeze_position) {
+      platf::macos::post_apple_pencil_gesture(apple_pencil_wire::event_t::squeeze_cancel, *input->apple_pencil_squeeze_position);
+      input->apple_pencil_squeeze_position.reset();
+    }
     if (input->mac_magnify_active) {
       platf::macos::touch_magnify(platf::macos::gesture_phase::cancelled, 0);
       input->mac_magnify_active = false;

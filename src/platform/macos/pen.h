@@ -4,13 +4,40 @@
  */
 #pragma once
 
+#include "src/apple_pencil_side_buttons.h"
 #include "src/platform/common.h"
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace platf::macos {
+  /**
+   * @brief Resolve a normalized pen location on the capture display.
+   * @param viewport Capture display metadata.
+   * @param x Normalized horizontal location.
+   * @param y Normalized vertical location.
+   * @return Quartz desktop position, or no position if the display is unavailable.
+   */
+  std::optional<CGPoint> pen_display_location(const touch_port_t &viewport, float x, float y);
+
+  /**
+   * @brief Create a Quartz event for a native Apple Pencil gesture.
+   * @param gesture Double tap or squeeze phase.
+   * @param position Target location in Quartz desktop coordinates.
+   * @return Owned event, or null on failure.
+   */
+  CGEventRef create_apple_pencil_gesture(input::apple_pencil_wire::event_t gesture, CGPoint position);
+
+  /**
+   * @brief Post a native Apple Pencil gesture to Quartz.
+   * @param gesture Double tap or squeeze phase.
+   * @param position Target location in Quartz desktop coordinates.
+   * @return Whether the event was created and submitted.
+   */
+  bool post_apple_pencil_gesture(input::apple_pencil_wire::event_t gesture, CGPoint position);
+
   /** @brief Own a pen's proximity, stroke, and tablet identity for one client. */
   class pen_device_t {
   public:
@@ -33,6 +60,14 @@ namespace platf::macos {
      * @param pen Pen sample; cancellation works even without a valid viewport.
      */
     void update(const touch_port_t &viewport, const pen_input_t &pen);
+
+#ifdef SUNSHINE_TESTS
+    /**
+     * @brief Refill the drag token without starting a display link.
+     * @param refreshed_at Simulated refresh time.
+     */
+    void signal_display_refresh(std::chrono::steady_clock::time_point refreshed_at);
+#endif
 
   private:
     struct state_t;  ///< Native event source and the last delivered tablet state.

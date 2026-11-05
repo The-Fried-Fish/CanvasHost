@@ -24,6 +24,7 @@ extern "C" {
 // local includes
 #include "src/config.h"
 #include "src/input.h"
+#include "src/apple_pencil_side_buttons.h"
 #include "src/mac_trackpad_gesture.h"
 #include "src/pen_barrel_roll.h"
 #include "src/platform/virtualhid_input.h"
@@ -168,6 +169,16 @@ TEST(InputPacketValidationTest, ValidatesUnicodePacketBoundsWithoutOverflow) {
 
   const auto truncated_text = make_input_packet(UTF8_TEXT_EVENT_MAGIC, maximum_declared_size, sizeof(NV_INPUT_HEADER));
   EXPECT_FALSE(input::testing::is_valid_input_packet(truncated_text));
+}
+
+/** @brief Apple Pencil gesture packets require exact wire and declared lengths. */
+TEST(InputPacketValidationTest, ValidatesApplePencilSideButtonPacketSize) {
+  using namespace input::apple_pencil_wire;
+  constexpr auto size = sizeof(packet_t) - sizeof(std::uint32_t);
+  EXPECT_TRUE(input::testing::is_valid_input_packet(make_input_packet(magic, size, sizeof(packet_t))));
+  EXPECT_FALSE(input::testing::is_valid_input_packet(make_input_packet(magic, size, sizeof(packet_t) - 1)));
+  EXPECT_FALSE(input::testing::is_valid_input_packet(make_input_packet(magic, size, sizeof(packet_t) + 1)));
+  EXPECT_FALSE(input::testing::is_valid_input_packet(make_input_packet(magic, size - 1, sizeof(packet_t))));
 }
 
 /** @brief Magnify and rotate use the same packet layout and length. */
@@ -374,8 +385,8 @@ namespace {
   }
 }  // namespace
 
-/** @brief Observe every hardware sample before batching, and reset detection on legacy packets. */
-TEST_F(InputGamepadSessionTest, BarrelRollSurvivesBatchingAndProtocolChanges) {
+/** @brief Preserve macOS pen samples and reset roll detection on legacy packets. */
+TEST_F(InputGamepadSessionTest, BarrelRollAcrossQueuedSamplesAndProtocolChanges) {
   ASSERT_FALSE(task_pool.running());
   config::input.mouse = config::input.native_pen_touch = true;
   auto mail = std::make_shared<safe::mail_raw_t>();
@@ -395,10 +406,24 @@ TEST_F(InputGamepadSessionTest, BarrelRollSurvivesBatchingAndProtocolChanges) {
   input::passthrough(stream_input, extended_pen(0, 45));
   input::passthrough(stream_input, extended_pen(1, 90));
   input::passthrough(stream_input, extended_pen(0, 180));
+#ifdef __APPLE__
   input::testing::process_next_input(stream_input);
   ASSERT_EQ(delivered.size(), 1);
+  EXPECT_EQ(delivered.back().rotation, 45);
+  EXPECT_EQ(delivered.back().barrelRoll, 45);
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 2);
+  input::testing::process_next_input(stream_input);
+  ASSERT_EQ(delivered.size(), 2);
+  EXPECT_EQ(delivered.back().rotation, 90);
+  EXPECT_EQ(delivered.back().barrelRoll, 1);
+  input::testing::process_next_input(stream_input);
+  ASSERT_EQ(delivered.size(), 3);
+#else
+  input::testing::process_next_input(stream_input);
+  ASSERT_EQ(delivered.size(), 1);
+#endif
   EXPECT_EQ(delivered.back().rotation, 180);
-  EXPECT_EQ(delivered.back().barrelRoll, 0);  // The intermediate 1 proved real roll even though it was batched away.
+  EXPECT_EQ(delivered.back().barrelRoll, 0);  // The intermediate 1 proved real roll.
   EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 0);
 
   input::passthrough(stream_input, extended_pen(90, 45));
@@ -410,7 +435,18 @@ TEST_F(InputGamepadSessionTest, BarrelRollSurvivesBatchingAndProtocolChanges) {
   legacy.resize(sizeof(SS_PEN_PACKET));
   NV_INPUT_HEADER header {util::endian::big<std::uint32_t>(32), util::endian::little<std::uint32_t>(SS_PEN_MAGIC)};
   std::memcpy(legacy.data(), &header, sizeof(header));
+#ifdef __APPLE__
+  auto earlier_legacy = extended_pen(0, 135);
+  earlier_legacy.resize(sizeof(SS_PEN_PACKET));
+  std::memcpy(earlier_legacy.data(), &header, sizeof(header));
+  input::passthrough(stream_input, std::move(earlier_legacy));
+#endif
   input::passthrough(stream_input, std::move(legacy));
+#ifdef __APPLE__
+  input::testing::process_next_input(stream_input);
+  EXPECT_EQ(delivered.back().barrelRoll, 135);
+  EXPECT_EQ(input::testing::queued_input_packet_count(stream_input), 1);
+#endif
   input::testing::process_next_input(stream_input);
   EXPECT_EQ(delivered.back().barrelRoll, 270);
   input::passthrough(stream_input, extended_pen(0, 30));

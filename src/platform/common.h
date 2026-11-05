@@ -6,6 +6,7 @@
 
 // standard includes
 #include <bitset>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -507,6 +508,7 @@ namespace platf {
     float contactAreaMajor;  ///< Major axis of the reported contact area.
     float contactAreaMinor;  ///< Minor axis of the reported contact area.
     std::uint16_t barrelRoll = 0xffff;  ///< Independent barrel rotation; unknown falls back to pen-tip azimuth.
+    std::chrono::steady_clock::time_point received_at {};  ///< Host receipt time, or zero for direct backend callers.
   };
 
   /**

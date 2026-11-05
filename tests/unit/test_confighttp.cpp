@@ -29,6 +29,7 @@
 #include <src/config.h>
 #include <src/confighttp.h>
 #include <src/crypto.h>
+#include <src/file_handler.h>
 #include <src/httpcommon.h>
 #include <src/network.h>
 #include <src/nvhttp.h>
@@ -257,6 +258,10 @@ protected:
       }
       // If check fails, check_content_type already sent an error response
     };
+
+#ifdef __APPLE__
+    server->resource["^/api/config$"]["POST"] = confighttp::saveConfig;
+#endif
 
     // Add a route to test CSRF token generation
     server->resource["^/csrf-token-test$"]["GET"] = [](
@@ -900,6 +905,42 @@ TEST_F(ConfigHttpTest, CSRFTokenGeneration) {
   // Token should be 32 characters (CSRF_TOKEN_SIZE)
   ASSERT_EQ(json_body["csrf_token"].get<std::string>().length(), 32);
 }
+
+#ifdef __APPLE__
+/** @brief Saving a pen mode persists it and updates the live mode without a restart. */
+TEST_F(ConfigHttpTest, SavesPenModeWithoutRestart) {
+  using enum config::penInjectMode;
+  const auto original_file = config::sunshine.config_file;
+  const auto original_mode = config::pen_inject_mode.exchange(regular);
+  const auto restore = util::fail_guard([&]() {
+    config::sunshine.config_file = original_file;
+    config::pen_inject_mode.store(original_mode);
+  });
+  config::sunshine.config_file = (test_web_dir / "pen-mode.conf").string();
+
+  SimpleWeb::CaseInsensitiveMultimap headers;
+  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
+  const auto token = client->request("GET", "/csrf-token-test", "", headers);
+  ASSERT_EQ(token->status_code, "200 OK");
+  headers.emplace("X-CSRF-Token", nlohmann::json::parse(token->content.string()).at("csrf_token").get<std::string>());
+  headers.emplace("Content-Type", "application/json");
+
+  const auto saved = client->request("POST", "/api/config", R"({"pen_inject_mode":"mixed"})", headers);
+  ASSERT_EQ(saved->status_code, "200 OK");
+  EXPECT_EQ(config::pen_inject_mode.load(), mixed);
+  EXPECT_EQ(file_handler::read_file(config::sunshine.config_file.c_str()), "pen_inject_mode = mixed\n");
+
+  const auto invalid = client->request("POST", "/api/config", R"({"pen_inject_mode":"invalid"})", headers);
+  EXPECT_EQ(invalid->status_code, "400 Bad Request");
+  EXPECT_EQ(config::pen_inject_mode.load(), mixed);
+  EXPECT_EQ(file_handler::read_file(config::sunshine.config_file.c_str()), "pen_inject_mode = mixed\n");
+
+  const auto reset = client->request("POST", "/api/config", "{}", headers);
+  ASSERT_EQ(reset->status_code, "200 OK");
+  EXPECT_EQ(config::pen_inject_mode.load(), regular);
+  EXPECT_TRUE(file_handler::read_file(config::sunshine.config_file.c_str()).empty());
+}
+#endif
 
 // Test: CSRF token validation with valid token in header
 TEST_F(ConfigHttpTest, CSRFValidationWithValidTokenInHeader) {

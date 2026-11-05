@@ -39,6 +39,25 @@ TEST(StreamPacketSizeConfigTest, LimitsPacketsOnlyWhenExplicitlyConfigured) {
   EXPECT_EQ(config::stream.packetsize, 0);
 }
 
+/** @brief Load the persisted pen policy and restore the default when the key is absent. */
+TEST(PenInjectConfigTest, LoadsPersistedMode) {
+  using enum config::penInjectMode;
+  const auto original_mode = config::pen_inject_mode.load();
+  const auto restore = util::fail_guard([&]() {
+    config::pen_inject_mode.store(original_mode);
+  });
+  config::apply_config_for_test("pen_inject_mode = tablet\n");
+  EXPECT_EQ(config::pen_inject_mode.load(), tablet);
+  config::apply_config_for_test("pen_inject_mode = mixed\n");
+  EXPECT_EQ(config::pen_inject_mode.load(), mixed);
+  config::apply_config_for_test("pen_inject_mode = regular\n");
+  EXPECT_EQ(config::pen_inject_mode.load(), regular);
+  config::apply_config_for_test("pen_inject_mode = mixed\n");
+  config::apply_config_for_test("");
+  EXPECT_EQ(config::pen_inject_mode.load(), regular);
+  EXPECT_FALSE(config::parse_pen_inject_mode("invalid"));
+}
+
 using NvencPresetNameParam = std::pair<int, std::string_view>;
 
 /**

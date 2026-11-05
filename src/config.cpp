@@ -871,6 +871,21 @@ namespace config {
     {},  // external_ip
   };
 
+  std::atomic<penInjectMode> pen_inject_mode {default_pen_inject_mode};
+
+  std::optional<penInjectMode> parse_pen_inject_mode(std::string_view value) {
+    if (value == "regular") {
+      return penInjectMode::regular;
+    }
+    if (value == "tablet") {
+      return penInjectMode::tablet;
+    }
+    if (value == "mixed") {
+      return penInjectMode::mixed;
+    }
+    return std::nullopt;
+  }
+
   /**
    * @brief Default input configuration values used before file and CLI overrides.
    */
@@ -1891,6 +1906,9 @@ namespace config {
     bool_f(vars, "macos_smooth_scrolling", input.macos_smooth_scrolling);
     string_restricted_f(vars, "macos_smooth_scrolling_diagnostics", input.macos_smooth_scrolling_diagnostics, {"disabled", "enabled", "trace"});
     bool_f(vars, "native_pen_touch", input.native_pen_touch);
+    std::string pen_mode;
+    string_f(vars, "pen_inject_mode", pen_mode);
+    pen_inject_mode.store(parse_pen_inject_mode(pen_mode).value_or(default_pen_inject_mode), std::memory_order_relaxed);
 
     bool_f(vars, "notify_pre_releases", sunshine.notify_pre_releases);
     bool_f(vars, "system_tray", sunshine.system_tray);

@@ -795,6 +795,31 @@ supported on the current platform.
     </tr>
 </table>
 
+### pen_inject_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            macOS only. Select how pen movement is injected.
+            <br>
+            Save to apply the setting to the next stroke.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            regular
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pen_inject_mode = mixed
+            @endcode</td>
+    </tr>
+</table>
+
 ### keybindings
 
 <table>

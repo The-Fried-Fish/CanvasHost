@@ -13,15 +13,20 @@
   #include <vector>
 
 namespace {
+  using namespace std::chrono_literals;
+  using steady_clock = std::chrono::steady_clock;
+  using enum config::penInjectMode;
   /** @brief Own event copies until the device has finished cleanup. */
   class MacosPenTest: public ::testing::Test {
   protected:
+    config::penInjectMode original_mode = config::default_pen_inject_mode;  ///< Restore the process-wide mode after the test.
     std::vector<CGEventRef> events;  ///< Copies of the actual backend's generated events.
     platf::touch_port_t viewport {-1000, 50, 1001, 501, 1001, 501};  ///< Offset logical desktop bounds.
     std::unique_ptr<platf::macos::pen_device_t> device;  ///< Production native tablet.
 
     /** @brief Create a device whose event sink never injects into the test host. */
     void SetUp() override {
+      original_mode = config::pen_inject_mode.exchange(regular);
       device = std::make_unique<platf::macos::pen_device_t>([this](CGEventRef event) {
         events.push_back(CGEventCreateCopy(event));
       });
@@ -30,6 +35,7 @@ namespace {
     /** @brief Finish proximity cleanup before releasing captured events. */
     void TearDown() override {
       device.reset();
+      config::pen_inject_mode.store(original_mode);
       for (auto event : events) {
         CFRelease(event);
       }
@@ -55,14 +61,32 @@ namespace {
   };
 }  // namespace
 
+/** @brief Encode Pencil gesture type, phase, and target point without a tablet click. */
+TEST_F(MacosPenTest, ApplePencilGestureEnvelope) {
+  using namespace input::apple_pencil_wire;
+  using enum event_t;
+  constexpr auto phase_field = static_cast<CGEventField>(0x84);
+  constexpr auto subtype_field = static_cast<CGEventField>(0x6e);
+  for (const auto gesture : {double_tap, squeeze_begin, squeeze_change, squeeze_end, squeeze_cancel}) {
+    const std::unique_ptr<__CGEvent, decltype(&CFRelease)> event {
+      platf::macos::create_apple_pencil_gesture(gesture, {-500, 300}), CFRelease};
+    ASSERT_TRUE(event);
+    EXPECT_EQ(CGEventGetType(event.get()), 29);
+    EXPECT_EQ(CGEventGetIntegerValueField(event.get(), subtype_field), 39);
+    EXPECT_EQ(CGEventGetIntegerValueField(event.get(), phase_field), static_cast<int>(gesture));
+    EXPECT_EQ(CGEventGetIntegerValueField(event.get(), kCGTabletEventPointButtons), 0);
+    EXPECT_TRUE(CGPointEqualToPoint(CGEventGetLocation(event.get()), {-500, 300}));
+  }
+  EXPECT_EQ(platf::macos::create_apple_pencil_gesture(static_cast<event_t>(3), {}), nullptr);
+}
+
 /** @brief Preserve pressure and rotate the barrel independently of the pen's tilt azimuth. */
 TEST_F(MacosPenTest, PressureTiltAndIndependentRoll) {
   device->update(viewport, sample());
   ASSERT_EQ(events.size(), 3);
   EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDown);
   EXPECT_EQ(field(kCGMouseEventSubtype), kCGEventMouseSubtypeTabletPoint);
-  // Quartz stores mouse pressure at 8-bit, tablet pressure at 16-bit precision.
-  EXPECT_NEAR(field(kCGMouseEventPressure), .75, 1.0 / 255);
+  EXPECT_EQ(field(kCGTabletEventPointButtons), 1);
   EXPECT_NEAR(field(kCGTabletEventPointPressure), .75, 1.0 / 65535);
   EXPECT_NEAR(field(kCGTabletEventTiltX), -.5, 1.0 / 32767);
   EXPECT_NEAR(field(kCGTabletEventTiltY), 0, 1e-5);
@@ -114,6 +138,75 @@ TEST_F(MacosPenTest, ReversesHoverRollAndAzimuthFallback) {
   EXPECT_DOUBLE_EQ(field(kCGTabletEventRotation), 0);
 }
 
+/** @brief Apply new modes at the next stroke and drop early tablet moves only. */
+TEST_F(MacosPenTest, ModeChangeAppliesToNextStroke) {
+  device->update(viewport, sample());
+  config::pen_inject_mode.store(tablet);
+  device->update(viewport, sample(LI_TOUCH_EVENT_MOVE));
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDragged);
+  EXPECT_EQ(field(kCGMouseEventSubtype), kCGEventMouseSubtypeTabletPoint);
+  device->update(viewport, sample(LI_TOUCH_EVENT_UP));
+
+  auto move = sample(LI_TOUCH_EVENT_MOVE);
+  move.received_at = steady_clock::now();
+  device->update(viewport, sample());
+  const auto before = events.size();
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDown);
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), before);
+  device->update(viewport, sample(LI_TOUCH_EVENT_UP));
+  ASSERT_EQ(events.size(), before + 1);
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseUp);
+
+  device->update(viewport, sample());
+  const auto started = events.size();
+  move.received_at = steady_clock::now() + 1s;
+  device->signal_display_refresh(move.received_at);
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), started + 1);
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventTabletPointer);
+}
+
+/** @brief Mixed mode consumes one eligible refresh without dropping tablet samples. */
+TEST_F(MacosPenTest, ConsumesOneCompatibilityDragTokenPerRefresh) {
+  config::pen_inject_mode.store(mixed);
+  const auto early = steady_clock::now();
+  device->update(viewport, sample());
+  const auto device_id = field(kCGTabletEventDeviceID);
+  auto move = sample(LI_TOUCH_EVENT_MOVE);
+  const auto after = steady_clock::now() + 1s;
+  const auto before = events.size();
+  device->signal_display_refresh(early);
+  move.received_at = early;
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), before);
+  move.received_at = after;
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), before + 1);
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventTabletPointer);
+
+  device->signal_display_refresh(after);
+  device->signal_display_refresh(after + 1ms);
+  move.received_at = after + 2ms;
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), before + 3);
+  EXPECT_EQ(CGEventGetType(events[before + 1]), kCGEventTabletPointer);
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDragged);
+  EXPECT_EQ(field(kCGTabletEventDeviceID), device_id);
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), before + 4);
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventTabletPointer);
+
+  device->signal_display_refresh(after);
+  device->update(viewport, sample(LI_TOUCH_EVENT_UP));
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseUp);
+  device->update(viewport, sample());
+  const auto next = events.size();
+  device->update(viewport, move);
+  ASSERT_EQ(events.size(), next + 1);
+  EXPECT_EQ(CGEventGetType(events.back()), kCGEventTabletPointer);
+}
+
 /** @brief Tip-up preserves hover; leaving range and repeated cancellation clean up exactly once. */
 TEST_F(MacosPenTest, StrokeLifecycleAndCancelWithoutCoordinates) {
   auto pen = sample(LI_TOUCH_EVENT_HOVER);
@@ -122,15 +215,16 @@ TEST_F(MacosPenTest, StrokeLifecycleAndCancelWithoutCoordinates) {
   EXPECT_DOUBLE_EQ(field(kCGTabletEventPointPressure), 0);
   pen.eventType = LI_TOUCH_EVENT_DOWN;
   device->update(viewport, pen);
-  const auto stroke = field(kCGMouseEventNumber);
+  const auto device_id = field(kCGTabletEventDeviceID);
   pen.eventType = LI_TOUCH_EVENT_MOVE;
   device->update(viewport, pen);
   EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDragged);
-  EXPECT_EQ(field(kCGMouseEventNumber), stroke);
+  EXPECT_EQ(field(kCGTabletEventPointButtons), 1);
+  EXPECT_NEAR(field(kCGTabletEventPointPressure), .75, 1.0 / 65535);
   pen.eventType = LI_TOUCH_EVENT_UP;
   device->update(viewport, pen);
   EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseUp);
-  EXPECT_EQ(field(kCGMouseEventNumber), stroke);
+  EXPECT_EQ(field(kCGTabletEventDeviceID), device_id);
   EXPECT_EQ(field(kCGTabletEventPointButtons), 0);
   EXPECT_EQ(field(kCGTabletEventPointPressure), 0);
   auto count = events.size();
@@ -169,7 +263,7 @@ TEST_F(MacosPenTest, HoverLeaveDoesNotSendARotationlessMouseMove) {
 TEST_F(MacosPenTest, IgnoresHoverUntilTheStrokeEnds) {
   device->update(viewport, sample());
   const auto count = events.size();
-  const auto stroke = field(kCGMouseEventNumber);
+  const auto device_id = field(kCGTabletEventDeviceID);
   auto hover = sample(LI_TOUCH_EVENT_HOVER);
   hover.x = .9F;
   hover.y = .9F;
@@ -182,7 +276,7 @@ TEST_F(MacosPenTest, IgnoresHoverUntilTheStrokeEnds) {
 
   device->update({}, sample(LI_TOUCH_EVENT_BUTTON_ONLY));
   EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDragged);
-  EXPECT_EQ(field(kCGMouseEventNumber), stroke);
+  EXPECT_EQ(field(kCGTabletEventDeviceID), device_id);
   EXPECT_DOUBLE_EQ(CGEventGetLocation(events.back()).x, -500);
   EXPECT_NEAR(field(kCGTabletEventPointPressure), .75, 1.0 / 65535);
   EXPECT_NEAR(field(kCGTabletEventTiltX), -.5, 1.0 / 32767);
@@ -190,10 +284,13 @@ TEST_F(MacosPenTest, IgnoresHoverUntilTheStrokeEnds) {
 
   device->update(viewport, sample(LI_TOUCH_EVENT_MOVE));
   EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseDragged);
-  EXPECT_EQ(field(kCGMouseEventNumber), stroke);
+  EXPECT_DOUBLE_EQ(CGEventGetLocation(events.back()).x, -500);
+  EXPECT_NEAR(field(kCGTabletEventPointPressure), .75, 1.0 / 65535);
+  EXPECT_NEAR(field(kCGTabletEventTiltX), -.5, 1.0 / 32767);
+  EXPECT_NEAR(field(kCGTabletEventRotation), 90, .01);
   device->update(viewport, sample(LI_TOUCH_EVENT_UP));
   EXPECT_EQ(CGEventGetType(events.back()), kCGEventLeftMouseUp);
-  EXPECT_EQ(field(kCGMouseEventNumber), stroke);
+  EXPECT_EQ(field(kCGTabletEventDeviceID), device_id);
 
   hover.toolType = LI_TOOL_TYPE_PEN;
   auto before_hover = events.size();

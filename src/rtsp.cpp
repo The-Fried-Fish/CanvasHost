@@ -931,6 +931,7 @@ namespace rtsp_stream {
     // Foundation clients send the extended pen packet only after this negotiation.
     if (config::input.mouse && (capabilities & platf::platform_caps::pen_touch)) {
       ss << "a=x-ss-general.penBarrelRoll:1" << std::endl;
+      ss << "a=x-ss-general.applePencilSideButtons:1" << std::endl;
       ss << "a=x-ss-general.macNativeTouchWorkaround:1" << std::endl;
     }
     if (config::input.mouse) {
