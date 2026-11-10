@@ -11,6 +11,7 @@ if (SUNSHINE_BUILD_HOMEBREW)
 else()
     # .app build
     set(APPLE_CODESIGN_IDENTITY "" CACHE STRING "Codesign identity, e.g. 'Developer ID Application: Name (TEAMID)'")
+    set(SIGNING_CONFIG "" CACHE FILEPATH "Signing config")
 
     # Build an .app
     set(CMAKE_MACOSX_BUNDLE YES)
@@ -149,10 +150,24 @@ qt6_deploy_runtime_dependencies(
               message(FATAL_ERROR \"codesign failed while signing vd_helper\")
           endif()
 
+          set(_app_entitlements \"${APPLE_ENTITLEMENTS_FILE}\")
+          if(NOT \"${SIGNING_CONFIG}\" STREQUAL \"\")
+              set(_app_entitlements \"${CMAKE_CURRENT_BINARY_DIR}/macos-signing-entitlements.plist\")
+              execute_process(COMMAND /bin/bash
+                  \"${PROJECT_SOURCE_DIR}/scripts/embed_signing_config.sh\"
+                  \"\${_app}\" \"${SIGNING_CONFIG}\"
+                  \"${APPLE_ENTITLEMENTS_FILE}\" \"\${_app_entitlements}\"
+                  RESULT_VARIABLE config_rc
+              )
+              if(NOT config_rc EQUAL 0)
+                  message(FATAL_ERROR \"Failed to prepare app signing configuration\")
+              endif()
+          endif()
+
           # Sign the app last
           execute_process(COMMAND /usr/bin/codesign --verbose=2
               --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${_app}\"
-              --entitlements \"${APPLE_ENTITLEMENTS_FILE}\"
+              --entitlements \"\${_app_entitlements}\"
               --force --timestamp --options=runtime
               RESULT_VARIABLE rc3
           )

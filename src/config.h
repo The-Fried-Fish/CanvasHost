@@ -326,6 +326,7 @@ namespace config {
     bool macos_smooth_scrolling;  ///< Enable pixel-based smooth scrolling on macOS.
     std::string macos_smooth_scrolling_diagnostics;  ///< "disabled", "enabled" or "trace": macOS scrolling diagnostics verbosity.
     bool native_pen_touch;  ///< Enable native pen and touch injection.
+    bool mac_native_touch;  ///< Prefer the macOS DriverKit touchscreen backend.
   };
 
   namespace flag {

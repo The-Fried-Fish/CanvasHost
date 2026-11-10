@@ -918,6 +918,7 @@ namespace config {
     true,  // macos_smooth_scrolling
     "disabled"s,  // macos_smooth_scrolling_diagnostics
     true,  // native pen/touch support
+    true,  // mac_native_touch
   };
 
   /**
@@ -1906,6 +1907,7 @@ namespace config {
     bool_f(vars, "macos_smooth_scrolling", input.macos_smooth_scrolling);
     string_restricted_f(vars, "macos_smooth_scrolling_diagnostics", input.macos_smooth_scrolling_diagnostics, {"disabled", "enabled", "trace"});
     bool_f(vars, "native_pen_touch", input.native_pen_touch);
+    bool_f(vars, "mac_native_touch", input.mac_native_touch);
     std::string pen_mode;
     string_f(vars, "pen_inject_mode", pen_mode);
     pen_inject_mode.store(parse_pen_inject_mode(pen_mode).value_or(default_pen_inject_mode), std::memory_order_relaxed);
