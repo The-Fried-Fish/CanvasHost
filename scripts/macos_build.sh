@@ -137,6 +137,7 @@ function run_step_cmake() {
   if [[ -n "${sign_app}" ]]; then
     if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
       cmake_args+=("-DAPPLE_CODESIGN_IDENTITY=${APPLE_CODESIGN_IDENTITY}")
+      cmake_args+=("-DSIGNING_CONFIG=${SIGNING_CONFIG:-}")
     else
       echo "Please set the APPLE_CODESIGN_IDENTITY environment variable or use --skip-codesign"
       exit 1

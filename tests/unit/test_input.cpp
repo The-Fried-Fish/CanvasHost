@@ -31,6 +31,7 @@ extern "C" {
 #include "src/utility.h"
 
 #ifdef __APPLE__
+  #include "src/platform/macos/native_touch.h"
   #include "src/platform/macos/native_touch_workaround.h"
 #endif
 
@@ -606,5 +607,105 @@ TEST(NativeTouchWorkaroundTest, PreservesLockedModeWhenMotionChanges) {
   EXPECT_EQ(pinch.x, 0);
   EXPECT_EQ(pinch.y, 0);
   EXPECT_EQ(pinch.magnification, 1);
+}
+#endif
+
+
+#ifdef __APPLE__
+TEST(MacNativeTouch, RejectsOfflineDisplay) {
+  platf::macos::native_touch_t digitizer;
+  EXPECT_FALSE(digitizer.connect(UINT32_MAX));
+  EXPECT_FALSE(digitizer.connected());
+}
+
+TEST(MacNativeTouch, TracksTwoContactsAndReleasesThemIndependently) {
+  using namespace mac_touch;
+  platf::macos::touch_contacts_t contacts;
+  const auto first = contacts.update(LI_TOUCH_EVENT_DOWN, 0, std::array {0.f, 1.f});
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->contacts[0].flags, touching | changed | moved);
+  EXPECT_EQ(first->contacts[0].x[0], 0);
+  EXPECT_EQ(first->contacts[0].y[1], 255);
+
+  const auto second = contacts.update(LI_TOUCH_EVENT_DOWN, UINT32_MAX, std::array {1.f, 0.f});
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->contacts[0].id, first->contacts[0].id);
+  EXPECT_EQ(second->contacts[0].flags, touching);
+  EXPECT_EQ(second->contacts[1].id, 2);
+  EXPECT_EQ(second->contacts[1].flags, touching | changed | moved);
+
+  const auto up = contacts.update(LI_TOUCH_EVENT_UP, 0, std::nullopt);
+  ASSERT_TRUE(up);
+  EXPECT_EQ(up->contacts[0].flags, changed);
+  EXPECT_EQ(up->contacts[0].y[1], 255);
+  EXPECT_EQ(up->contacts[1].flags, touching);
+  EXPECT_TRUE(contacts.active());
+
+  const auto cancelled = contacts.update(LI_TOUCH_EVENT_CANCEL_ALL, 0, std::nullopt);
+  ASSERT_TRUE(cancelled);
+  EXPECT_EQ(cancelled->contacts[0].id, 0);
+  EXPECT_EQ(cancelled->contacts[1].flags, changed);
+  EXPECT_FALSE(contacts.active());
+}
+
+TEST(MacNativeTouch, EncodesActiveAndEndingContactsForTheSystemDigitizer) {
+  mac_touch::report_t report {};
+  report.contacts[0] = {mac_touch::touching | mac_touch::moved, 1, {1, 2}, {3, 4}};
+  report.contacts[2] = {mac_touch::changed, 3, {5, 6}, {7, 8}};
+
+  const auto hid = mac_touch::encode_hid_report(report);
+  EXPECT_EQ(hid.count, 2);
+  EXPECT_EQ(hid.contacts[0].flags, 7);
+  EXPECT_EQ(hid.contacts[0].id, 1);
+  EXPECT_EQ(hid.contacts[0].x[1], 2);
+  EXPECT_EQ(hid.contacts[0].y[1], 4);
+  EXPECT_EQ(hid.contacts[1].id, 0);
+  EXPECT_EQ(hid.contacts[2].flags, 4);
+  EXPECT_EQ(hid.contacts[2].id, 3);
+  EXPECT_EQ(hid.contacts[2].x[1], 6);
+  EXPECT_EQ(hid.contacts[2].y[1], 8);
+}
+
+TEST(MacNativeTouch, StartsUnknownContactsOnTheirFirstMove) {
+  using namespace mac_touch;
+  platf::macos::touch_contacts_t contacts;
+  const auto first = contacts.update(LI_TOUCH_EVENT_MOVE, 20, std::array {0.25f, 0.5f});
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->contacts[0].id, 1);
+  EXPECT_EQ(first->contacts[0].flags, touching | changed | moved);
+
+  const auto second = contacts.update(LI_TOUCH_EVENT_MOVE, 21, std::array {0.75f, 0.5f});
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->contacts[0].flags, touching);
+  EXPECT_EQ(second->contacts[1].id, 2);
+  EXPECT_EQ(second->contacts[1].flags, touching | changed | moved);
+
+  const auto move = contacts.update(LI_TOUCH_EVENT_MOVE, 20, std::array {0.2f, 0.5f});
+  ASSERT_TRUE(move);
+  EXPECT_EQ(move->contacts[0].id, first->contacts[0].id);
+  EXPECT_EQ(move->contacts[0].flags, touching | moved);
+  EXPECT_EQ(move->contacts[1].flags, touching);
+}
+
+TEST(MacNativeTouch, IgnoresInvalidOrDuplicatePacketsAndReusesReleasedSlots) {
+  platf::macos::touch_contacts_t contacts;
+  const std::array position {0.5f, 0.5f};
+  EXPECT_FALSE(contacts.update(LI_TOUCH_EVENT_MOVE, 1, std::nullopt));
+  EXPECT_FALSE(contacts.update(LI_TOUCH_EVENT_UP, 1, std::nullopt));
+  EXPECT_FALSE(contacts.update(LI_TOUCH_EVENT_DOWN, 1, std::nullopt));
+  for (unsigned i = 0; i < mac_touch::max_contacts; ++i) {
+    ASSERT_TRUE(contacts.update(LI_TOUCH_EVENT_DOWN, i, position));
+  }
+  EXPECT_FALSE(contacts.update(LI_TOUCH_EVENT_DOWN, 1, position));
+  EXPECT_FALSE(contacts.update(LI_TOUCH_EVENT_DOWN, mac_touch::max_contacts, position));
+  ASSERT_TRUE(contacts.update(LI_TOUCH_EVENT_CANCEL, 1, std::nullopt));
+  const auto reused = contacts.update(LI_TOUCH_EVENT_DOWN, mac_touch::max_contacts, position);
+  ASSERT_TRUE(reused);
+  EXPECT_EQ(reused->contacts[1].id, 2);
+  const auto move = contacts.update(LI_TOUCH_EVENT_MOVE, mac_touch::max_contacts, std::array {-1.f, 2.f});
+  ASSERT_TRUE(move);
+  EXPECT_EQ(move->contacts[1].flags, mac_touch::touching | mac_touch::moved);
+  EXPECT_EQ(move->contacts[1].x[0], 0);
+  EXPECT_EQ(move->contacts[1].y[1], 255);
 }
 #endif

@@ -44,6 +44,7 @@ extern "C" {
 #include "thread_pool.h"
 #include "utility.h"
 #ifdef __APPLE__
+  #include "platform/macos/native_touch.h"
   #include "platform/macos/native_touch_workaround.h"
   #include "platform/macos/pen.h"
   #include "platform/macos/smooth_scroll.h"
@@ -375,6 +376,7 @@ namespace input {
     bool mac_rotate_active = false;  ///< Whether the client has an active Quartz rotation.
     bool scroll_brake_left_down = false;  ///< Left press consumed to brake inertia, awaiting release.
     native_touch_state_t native_touch;  ///< Touchscreen compatibility state.
+    platf::macos::native_touch_t native_digitizer;  ///< Native touchscreen for this stream.
     bool relative_mouse_positioned = false;  ///< Whether the remote relative mouse has started on the capture display.
 #endif
     input::touch_port_t touch_port;  ///< Touch coordinate bounds for the current stream.
@@ -1730,16 +1732,17 @@ namespace input {
   void native_touch_workaround(std::shared_ptr<input_t> &input, PSS_TOUCH_PACKET packet) {
     auto &state = input->native_touch;
     const auto id = util::endian::little(packet->pointerId);
-    const auto type = packet->eventType;
+    const bool known = state.contacts.contains(id);
+    const auto type = packet->eventType == LI_TOUCH_EVENT_MOVE && !known ? LI_TOUCH_EVENT_DOWN : packet->eventType;
     const bool release = type == LI_TOUCH_EVENT_UP || type == LI_TOUCH_EVENT_CANCEL || type == LI_TOUCH_EVENT_CANCEL_ALL;
     if (type != LI_TOUCH_EVENT_DOWN && type != LI_TOUCH_EVENT_MOVE && !release) {
       return;
     }
-    if (type != LI_TOUCH_EVENT_DOWN && type != LI_TOUCH_EVENT_CANCEL_ALL && !state.contacts.contains(id)) {
+    if (type != LI_TOUCH_EVENT_DOWN && type != LI_TOUCH_EVENT_CANCEL_ALL && !known) {
       return;
     }
 
-    if (type == LI_TOUCH_EVENT_DOWN && (state.contacts.size() >= 16 || state.contacts.contains(id))) {
+    if (type == LI_TOUCH_EVENT_DOWN && (state.contacts.size() >= 16 || known)) {
       return;
     }
 
@@ -1937,9 +1940,29 @@ namespace input {
    */
   void passthrough(std::shared_ptr<input_t> &input, PSS_TOUCH_PACKET packet) {
 #ifdef __APPLE__
-    if (config::input.mouse && config::input.native_pen_touch) {
-      native_touch_workaround(input, packet);
+    if (!config::input.mouse || !config::input.native_pen_touch) {
+      input->native_digitizer.reset();
+      return;
     }
+    if (!config::input.mac_native_touch) {
+      input->native_digitizer.reset();
+      native_touch_workaround(input, packet);
+      return;
+    }
+    auto &digitizer = input->native_digitizer;
+    const auto type = packet->eventType;
+    const bool has_position = type == LI_TOUCH_EVENT_DOWN || type == LI_TOUCH_EVENT_MOVE;
+    if (digitizer.connected() || (has_position && input->native_touch.contacts.empty())) {
+      const auto data = has_position ? prepare_absolute_pointer_data(input, packet) : std::nullopt;
+      const auto display = data ? data->touch_port.native_display_id : 0;
+      if (digitizer.connected() || (data && digitizer.connect(display))) {
+        const auto position = data
+          ? std::optional {std::array {data->coords.first, data->coords.second}} : std::nullopt;
+        digitizer.update(display, type, util::endian::little(packet->pointerId), position);
+        return;
+      }
+    }
+    native_touch_workaround(input, packet);
 #else
     const auto pointer_data = prepare_absolute_pointer_data(input, packet);
     if (!pointer_data) {
@@ -3101,6 +3124,7 @@ namespace input {
       platf::macos::touch_rotate(platf::macos::gesture_phase::cancelled, 0);
       input->mac_rotate_active = false;
     }
+    input->native_digitizer.reset();
     auto &touch = input->native_touch;
     release_native_touch_left(touch);
     finish_native_touch_magnify(touch, true);
