@@ -417,6 +417,8 @@
     "qsv_slow_hevc_desc": "This can enable HEVC encoding on older Intel GPUs, at the cost of higher GPU usage and worse performance.",
     "restart_note": "Sunshine is restarting to apply changes.",
     "search_options": "Search configuration options...",
+    "sdr_colorspace": "SDR Colorspace",
+    "sdr_colorspace_desc": "Override the client SDR colorspace. Auto uses the client request.",
     "stream_audio": "Stream Audio",
     "stream_audio_desc": "Whether to stream audio or not. Disabling this can be useful for streaming headless displays as second monitors.",
     "sunshine_name": "Sunshine Name",

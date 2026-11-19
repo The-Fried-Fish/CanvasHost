@@ -664,7 +664,7 @@ namespace platf {
             .range = requested_range,
             .maximum_potential_edr = disp->maximum_potential_edr,
             .platform_supports_hdr = platform_supports_hdr,
-            .session_requests_10bit = config.dynamicRange > 0,
+            .session_requests_10bit = config.dynamicRange > 0 && !config.force_sdr,
           });
 
           if (disp->hdr_capture) {

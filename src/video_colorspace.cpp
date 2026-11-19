@@ -30,7 +30,7 @@ namespace video {
 
     /* See video::config_t declaration for details */
 
-    if (config.dynamicRange > 0 && hdr_display) {
+    if (config.dynamicRange > 0 && hdr_display && !config.force_sdr) {
       // Rec. 2020 with ST 2084 perceptual quantizer
       colorspace.colorspace = colorspace_e::bt2020;
     } else {

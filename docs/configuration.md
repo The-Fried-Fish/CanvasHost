@@ -961,6 +961,29 @@ supported on the current platform.
     </tr>
 </table>
 
+### sdr_colorspace
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">Override the client SDR colorspace. Auto uses the client request.</td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2"><code>bt2020</code></td>
+    </tr>
+    <tr>
+        <td>Choices</td>
+        <td colspan="2"><code>auto</code>, <code>bt601</code>, <code>bt709</code>, <code>bt2020</code></td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            sdr_colorspace = bt709
+            @endcode</td>
+    </tr>
+</table>
+
 ### stream_audio
 
 <table>

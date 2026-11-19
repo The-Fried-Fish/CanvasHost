@@ -67,6 +67,17 @@ const config = ref(props.config)
       </template>
     </PlatformLayout>
 
+    <div class="mb-3">
+      <label for="sdr_colorspace" class="form-label">{{ $t('config.sdr_colorspace') }}</label>
+      <select id="sdr_colorspace" class="form-select" v-model="config.sdr_colorspace">
+        <option value="auto">Auto</option>
+        <option value="bt601">BT.601</option>
+        <option value="bt709">BT.709</option>
+        <option value="bt2020">BT.2020</option>
+      </select>
+      <div class="form-text">{{ $t('config.sdr_colorspace_desc') }}</div>
+    </div>
+
     <!-- Disable Audio -->
     <Checkbox class="mb-3"
               id="stream_audio"

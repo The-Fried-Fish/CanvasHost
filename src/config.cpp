@@ -813,6 +813,7 @@ namespace config {
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
+    "bt2020",  // sdr_colorspace
 
     {
       video_t::dd_t::config_option_e::disabled,  // configuration_option
@@ -1766,6 +1767,7 @@ namespace config {
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
+    string_restricted_f(vars, "sdr_colorspace", video.sdr_colorspace, {"auto"sv, "bt601"sv, "bt709"sv, "bt2020"sv});
     string_f(vars, "virtual_display", video.virtual_display);
     bool_f(vars, "show_cursor", video.show_cursor);
 

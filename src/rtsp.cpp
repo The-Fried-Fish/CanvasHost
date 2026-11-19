@@ -1213,8 +1213,17 @@ namespace rtsp_stream {
       config.monitor.slicesPerFrame = (int) util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
       config.monitor.numRefFrames = (int) util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
       config.monitor.encoderCscMode = (int) util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
+      if (config::video.sdr_colorspace != "auto") {
+        const auto colorspace = config::video.sdr_colorspace == "bt601" ? 0 :
+                                config::video.sdr_colorspace == "bt709" ? 2 : 4;
+        config.monitor.encoderCscMode = colorspace | (config.monitor.encoderCscMode & 1);
+      }
       config.monitor.videoFormat = (int) util::from_view(args.at("x-nv-vqos[0].bitStreamFormat"sv));
       config.monitor.dynamicRange = (int) util::from_view(args.at("x-nv-video[0].dynamicRangeMode"sv));
+      if (config::video.sdr_colorspace == "bt2020" && config.monitor.dynamicRange == 0) {
+        config.monitor.force_sdr = true;
+        config.monitor.dynamicRange = 1;
+      }
       config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
 

@@ -188,6 +188,7 @@ namespace config {
     std::string encoder;  ///< Encoder backend name selected by configuration.
     std::string adapter_name;  ///< Display adapter name selected in configuration.
     std::string output_name;  ///< Display output name selected in configuration.
+    std::string sdr_colorspace;  ///< SDR colorspace override, or auto to use the client request.
 
     /**
      * @brief Display-device integration settings.

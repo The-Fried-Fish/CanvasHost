@@ -432,7 +432,7 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Add authorized client data.
+   * @brief Add authorized client data, replacing existing records for the same certificate.
    *
    * @param name Human-readable name to assign.
    * @param cert Certificate data or object used by the operation.
@@ -450,6 +450,9 @@ namespace nvhttp {
     named_cert.uuid = uuid_util::uuid_t::generate().string();
 
     std::lock_guard lock {client_auth_mutex()};
+    std::erase_if(client_root.named_devices, [&](const auto &existing) {
+      return existing.cert == named_cert.cert;
+    });
     client_root.named_devices.emplace_back(std::move(named_cert));
     rebuild_client_cert_chain();
 
