@@ -248,3 +248,92 @@ TEST(VirtualDisplayConfigTest, ExistingDisplayByDefaultAndExplicitExtension) {
   config::apply_config_for_test("virtual_display = enabled\n");
   EXPECT_EQ(config::video.virtual_display, "enabled");
 }
+
+using MacosHdrCaptureConfigParam = std::pair<std::string_view, std::string_view>;  ///< Configuration text and the capture dynamic range it must produce.
+
+/**
+ * @brief Coverage for the `capture_dynamic_range_macos` option as it is read from sunshine.conf.
+ */
+struct MacosHdrCaptureConfigTest: testing::TestWithParam<MacosHdrCaptureConfigParam> {
+  /**
+   * @brief Restore the encoder configuration that was captured before the test body ran.
+   */
+  void TearDown() override {
+    config::video = original_video;
+    config::modified_config_settings = original_modified_config_settings;
+  }
+
+  config::video_t original_video {config::video};  ///< Encoder configuration restored after each parameterized test.
+  decltype(config::modified_config_settings) original_modified_config_settings {config::modified_config_settings};  ///< Change tracking restored after each test.
+};
+
+TEST_P(MacosHdrCaptureConfigTest, AppliesTheConfiguredDynamicRange) {
+  const auto &[setting, expected] = GetParam();
+  config::apply_config_for_test(setting);
+
+  EXPECT_EQ(expected, config::video.vt.capture_dynamic_range_macos);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+  MacosHdrCaptureValues,
+  MacosHdrCaptureConfigTest,
+  testing::Values(
+    MacosHdrCaptureConfigParam {"capture_dynamic_range_macos = sdr\n"sv, "sdr"sv},
+    MacosHdrCaptureConfigParam {"capture_dynamic_range_macos = hdr_local\n"sv, "hdr_local"sv},
+    MacosHdrCaptureConfigParam {"capture_dynamic_range_macos = hdr_canonical\n"sv, "hdr_canonical"sv},
+    MacosHdrCaptureConfigParam {"capture_dynamic_range_macos = hdr\n"sv, "sdr"sv}
+  )
+);
+
+/**
+ * @brief An unrecognised value keeps the dynamic range already in effect rather than resetting it.
+ */
+TEST(MacosHdrCaptureConfig, KeepsTheDynamicRangeAlreadyInEffect) {
+  const config::video_t original_video = config::video;
+  const decltype(config::modified_config_settings) original_modified_config_settings = config::modified_config_settings;
+
+  config::apply_config_for_test("capture_dynamic_range_macos = hdr_canonical\n"sv);
+  config::apply_config_for_test("capture_dynamic_range_macos = hdr\n"sv);
+  EXPECT_EQ("hdr_canonical"sv, config::video.vt.capture_dynamic_range_macos);
+
+  config::video = original_video;
+  config::modified_config_settings = original_modified_config_settings;
+}
+
+/**
+ * @brief The synthesised HDR10 luminances are configuration options, so a tuned value survives a reboot.
+ *
+ * The environment variables still win over these at the point the metadata is written, but only these
+ * are read from sunshine.conf, which is the only thing that outlives `open --env`.
+ */
+TEST(MacosHdrMetadataConfig, ReadsTheConfiguredLuminances) {
+  const config::video_t original_video = config::video;
+  const decltype(config::modified_config_settings) original_modified_config_settings = config::modified_config_settings;
+
+  config::apply_config_for_test(
+    "hdr_max_luminance_macos = 500\n"
+    "hdr_min_luminance_macos = 0.005\n"
+    "hdr_max_cll_macos = 400\n"
+    "hdr_max_fall_macos = 200\n"sv
+  );
+
+  EXPECT_DOUBLE_EQ(500.0, config::video.vt.hdr_max_luminance_macos);
+  EXPECT_DOUBLE_EQ(0.005, config::video.vt.hdr_min_luminance_macos);
+  EXPECT_DOUBLE_EQ(400.0, config::video.vt.hdr_max_cll_macos);
+  EXPECT_DOUBLE_EQ(200.0, config::video.vt.hdr_max_fall_macos);
+
+  // -1 is the sentinel meaning "derive it", and 0 on a content light level means "leave it out".
+  config::apply_config_for_test(
+    "hdr_max_luminance_macos = -1\n"
+    "hdr_max_cll_macos = 0\n"sv
+  );
+  EXPECT_DOUBLE_EQ(-1.0, config::video.vt.hdr_max_luminance_macos);
+  EXPECT_DOUBLE_EQ(0.0, config::video.vt.hdr_max_cll_macos);
+
+  // A peak beyond anything a display reaches is refused, and the previous value stays in effect.
+  config::apply_config_for_test("hdr_max_luminance_macos = 20000\n"sv);
+  EXPECT_DOUBLE_EQ(-1.0, config::video.vt.hdr_max_luminance_macos);
+
+  config::video = original_video;
+  config::modified_config_settings = original_modified_config_settings;
+}
