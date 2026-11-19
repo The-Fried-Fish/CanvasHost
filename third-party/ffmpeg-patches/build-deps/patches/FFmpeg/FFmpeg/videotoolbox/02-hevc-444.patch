@@ -1,0 +1,27 @@
+--- a/libavcodec/videotoolboxenc.c
++++ b/libavcodec/videotoolboxenc.c
+@@ -985,9 +985,12 @@
+                 compat_keys.kVTProfileLevel_HEVC_Main10_AutoLevel;
+             break;
+         case AV_PROFILE_HEVC_REXT:
+-            // only main42210 is supported, omit depth and chroma subsampling
+-            *profile_level_val =
+-                compat_keys.kVTProfileLevel_HEVC_Main42210_AutoLevel;
++            if (desc && desc->log2_chroma_w == 0 && desc->log2_chroma_h == 0) {
++                *profile_level_val = bit_depth > 8 ? CFSTR("HEVC_Main44410_AutoLevel")
++                                                   : CFSTR("HEVC_Main444_AutoLevel");
++            } else {
++                *profile_level_val = compat_keys.kVTProfileLevel_HEVC_Main42210_AutoLevel;
++            }
+             break;
+     }
+ 
+@@ -2897,6 +2900,8 @@
+     { "profile", "Profile", OFFSET(profile), AV_OPT_TYPE_INT, { .i64 = AV_PROFILE_UNKNOWN }, AV_PROFILE_UNKNOWN, INT_MAX, VE, .unit = "profile" },
+     { "main",     "Main Profile",     0, AV_OPT_TYPE_CONST, { .i64 = AV_PROFILE_HEVC_MAIN    }, INT_MIN, INT_MAX, VE, .unit = "profile" },
+     { "main10",   "Main10 Profile",   0, AV_OPT_TYPE_CONST, { .i64 = AV_PROFILE_HEVC_MAIN_10 }, INT_MIN, INT_MAX, VE, .unit = "profile" },
++    { "main444",  "Main 4:4:4 Profile",0, AV_OPT_TYPE_CONST, { .i64 = AV_PROFILE_HEVC_REXT }, INT_MIN, INT_MAX, VE, .unit = "profile" },
++    { "main44410","Main 4:4:4 10 Profile",0, AV_OPT_TYPE_CONST, { .i64 = AV_PROFILE_HEVC_REXT }, INT_MIN, INT_MAX, VE, .unit = "profile" },
+     { "main42210","Main 4:2:2 10 Profile",0, AV_OPT_TYPE_CONST, { .i64 = AV_PROFILE_HEVC_REXT }, INT_MIN, INT_MAX, VE, .unit = "profile" },
+     { "rext",     "Main 4:2:2 10 Profile",0, AV_OPT_TYPE_CONST, { .i64 = AV_PROFILE_HEVC_REXT }, INT_MIN, INT_MAX, VE, .unit = "profile" },
+ 

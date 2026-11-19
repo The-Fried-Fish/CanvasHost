@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build the FFmpeg dependency bundle Lumen should link against: the published build-deps archive with
-# third-party/ffmpeg-patches/build-deps/patches/FFmpeg/FFmpeg/videotoolbox/01-frame-drain.patch
-# applied to FFmpeg itself.
+# the VideoToolbox frame-drain and HEVC 4:4:4 patches applied to FFmpeg itself.
 #
 # The published archive is used as the base so that libx264.a, libx265.a, libSvtAv1Enc.a, libcbs.a and
 # their headers stay byte identical to what LizardByte publishes; only the FFmpeg libraries are rebuilt.
@@ -49,11 +48,13 @@ if [ ! -d src ]; then
   tar xzf src.tar.gz -C src --strip-components=1
 fi
 
-if grep -q frame_drain src/libavcodec/videotoolboxenc.c; then
-  echo "patch already applied in ${WORK}/src"
-else
-  patch -p1 -d src -i "${patch_file}"
-fi
+for patch_file in "${repo_root}"/third-party/ffmpeg-patches/build-deps/patches/FFmpeg/FFmpeg/videotoolbox/*.patch; do
+  if patch --dry-run -R -p1 -d src -i "${patch_file}" >/dev/null 2>&1; then
+    echo "patch already applied: ${patch_file}"
+  else
+    patch -p1 -d src -i "${patch_file}"
+  fi
+done
 
 # The published archive ships libx264.a and x264.h but no x264.pc: upstream built x264 into its own
 # prefix and pointed PKG_CONFIG_PATH there, so FFmpeg's pkg-config check for libx264 needs a file the
@@ -140,7 +141,7 @@ archive:     ${ARCHIVE}
 sha256:      $(cat "${ARCHIVE}.sha256")
 base:        https://github.com/LizardByte/build-deps/releases/download/${BUILD_DEPS_TAG}/${ARCHIVE}
 ffmpeg:      ${FFMPEG_COMMIT}
-patch:       third-party/ffmpeg-patches/build-deps/patches/FFmpeg/FFmpeg/videotoolbox/01-frame-drain.patch
+patches:     third-party/ffmpeg-patches/build-deps/patches/FFmpeg/FFmpeg/videotoolbox/*.patch
 built:       $(sw_vers -productVersion 2>/dev/null || echo unknown) / $(uname -m) / $(/usr/bin/clang --version | head -1)
 configured:  as recorded in the published libavutil.a, CI paths replaced by the base bundle
 verify:      frame_drain present; x264/x265/SVT-AV1 encoder symbols present

@@ -128,3 +128,15 @@ result says nothing about the encoder.
 - The 4K leg of the drain trade-off is unmeasured in a live session, tracked as V6a in
   `docs/macos_latency_audit.md`. Until it is measured, the default of draining every submit is a
   2560x1920 result, not a 4K result.
+
+## videotoolbox/02-hevc-444.patch
+
+Maps HEVC REXT with NV24/P410 input to VideoToolbox's `HEVC_Main444_AutoLevel`
+and `HEVC_Main44410_AutoLevel` profiles instead of the 4:2:2 profile. Adds
+`main444` and `main44410` profile aliases; Canvas Host checks for the alias before
+advertising 4:4:4, so an older bundle cannot silently produce 4:2:2 instead.
+
+`build-bundle.sh` applies both VideoToolbox patches. The macOS capture path uses
+RGB input and a pixel transfer session to retain full-resolution chroma, with
+separate pooled output buffers for frames still owned by the encoder. Encoder
+probing controls whether HEVC 4:4:4 capabilities are advertised to clients.

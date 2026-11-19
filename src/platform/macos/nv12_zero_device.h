@@ -7,6 +7,8 @@
 // local includes
 #include "src/platform/common.h"
 
+#include <VideoToolbox/VideoToolbox.h>
+
 struct AVFrame;
 
 namespace platf {
@@ -18,7 +20,7 @@ namespace platf {
   void free_frame(AVFrame *frame);
 
   /**
-   * @brief macOS zero-copy encode device that forwards NV12 frames from AVFoundation to FFmpeg.
+   * @brief macOS encode device that forwards 4:2:0 buffers or converts RGB capture to 4:4:4.
    */
   class nv12_zero_device: public avcodec_encode_device_t {
     // display holds a pointer to an av_video object. Since the namespaces of AVFoundation
@@ -26,6 +28,12 @@ namespace platf {
     void *display;
 
   public:
+    /** @brief Release pixel transfer resources. */
+    ~nv12_zero_device() override;
+
+    /** @brief Configure the output colorimetry used by pixel transfer. */
+    void apply_colorspace() override;
+
     // this function is used to set the resolution on an av_video object that we cannot
     // call directly because of namespace collisions between AVFoundation and FFMPEG
     /**
@@ -39,7 +47,7 @@ namespace platf {
     using pixel_format_fn_t = std::function<void(void *display, int pixelFormat)>;
 
     /**
-     * @brief Initialize zero-copy NV12 encoding for an AVFoundation display.
+     * @brief Initialize direct 4:2:0 input or RGB to 4:4:4 pixel transfer.
      *
      * @param display Display object or identifier associated with the operation.
      * @param pix_fmt Sunshine pixel format to convert or allocate for.
@@ -50,7 +58,7 @@ namespace platf {
     int init(void *display, pix_fmt_e pix_fmt, resolution_fn_t resolution_fn, const pixel_format_fn_t &pixel_format_fn);
 
     /**
-     * @brief Forward a captured AVFoundation frame to FFmpeg without copying.
+     * @brief Forward or convert a captured CoreVideo frame while retaining encoder ownership.
      *
      * @param img Image or frame object to read from or populate.
      * @return Zero on success, or minus one when the captured pixel buffer is missing.
@@ -67,6 +75,9 @@ namespace platf {
 
   private:
     util::safe_ptr<AVFrame, free_frame> av_frame;
+    VTPixelTransferSessionRef transfer_session = nullptr;  ///< RGB to 4:4:4 conversion session.
+    CVPixelBufferPoolRef pixel_pool = nullptr;  ///< Pool retaining converted frames while encoding.
+    OSType output_format = 0;  ///< Nonzero for converted 4:4:4 output.
   };
 
 }  // namespace platf

@@ -1393,8 +1393,8 @@ namespace video {
       AV_PIX_FMT_VIDEOTOOLBOX,
       AV_PIX_FMT_NV12,
       AV_PIX_FMT_P010,
-      AV_PIX_FMT_NONE,
-      AV_PIX_FMT_NONE,
+      AV_PIX_FMT_NV24,
+      AV_PIX_FMT_P410,
       vt_init_avcodec_hardware_input_buffer
     ),
     {
@@ -1458,7 +1458,7 @@ namespace video {
       "h264_videotoolbox"s,
       {},  // capabilities
     },
-    PARALLEL_ENCODING
+    PARALLEL_ENCODING | YUV444_SUPPORT
   };
 #endif
 
@@ -2060,6 +2060,14 @@ namespace video {
       BOOST_LOG(error) << "Couldn't open ["sv << video_format.name << ']';
 
       return nullptr;
+    }
+
+    if (config.chromaSamplingType == 1 && video_format.name == "hevc_videotoolbox") {
+      const auto *codec_class = codec->priv_class;
+      if (!av_opt_find(&codec_class, "main444", "profile", 0, AV_OPT_SEARCH_FAKE_OBJ)) {
+        BOOST_LOG(warning) << "HEVC 4:4:4 requires an FFmpeg bundle with the VideoToolbox 4:4:4 patch"sv;
+        return nullptr;
+      }
     }
 
     auto colorspace = encode_device->colorspace;
@@ -3857,8 +3865,10 @@ namespace video {
         return platf::pix_fmt_e::nv12;
       case AV_PIX_FMT_P010:
         return platf::pix_fmt_e::p010;
+      case AV_PIX_FMT_NV24:
       case AV_PIX_FMT_YUV444P:
         return platf::pix_fmt_e::yuv444p;
+      case AV_PIX_FMT_P410:
       case AV_PIX_FMT_YUV444P16:
         return platf::pix_fmt_e::yuv444p16;
       default:

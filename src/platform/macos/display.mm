@@ -165,9 +165,12 @@ namespace platf {
       if (pix_fmt == pix_fmt_e::yuv420p) {
         av_capture.pixelFormat = kCVPixelFormatType_32BGRA;
         return std::make_unique<avcodec_encode_device_t>();
-      } else if (pix_fmt == pix_fmt_e::nv12 || pix_fmt == pix_fmt_e::p010) {
+      } else if (pix_fmt == pix_fmt_e::nv12 || pix_fmt == pix_fmt_e::p010 ||
+                 pix_fmt == pix_fmt_e::yuv444p || pix_fmt == pix_fmt_e::yuv444p16) {
         auto device = std::make_unique<nv12_zero_device>();
-        device->init(static_cast<void *>(av_capture), pix_fmt, setResolution, setPixelFormat);
+        if (device->init(static_cast<void *>(av_capture), pix_fmt, setResolution, setPixelFormat)) {
+          return nullptr;
+        }
         return device;
       } else {
         BOOST_LOG(error) << "Unsupported Pixel Format."sv;
@@ -511,9 +514,12 @@ namespace platf {
       if (pix_fmt == pix_fmt_e::yuv420p) {
         sc_capture.pixelFormat = kCVPixelFormatType_32BGRA;
         return std::make_unique<avcodec_encode_device_t>();
-      } else if (pix_fmt == pix_fmt_e::nv12 || pix_fmt == pix_fmt_e::p010) {
+      } else if (pix_fmt == pix_fmt_e::nv12 || pix_fmt == pix_fmt_e::p010 ||
+                 pix_fmt == pix_fmt_e::yuv444p || pix_fmt == pix_fmt_e::yuv444p16) {
         auto device = std::make_unique<nv12_zero_device>();
-        device->init(static_cast<void *>(sc_capture), pix_fmt, setResolution, setPixelFormat);
+        if (device->init(static_cast<void *>(sc_capture), pix_fmt, setResolution, setPixelFormat)) {
+          return nullptr;
+        }
         return device;
       } else {
         BOOST_LOG(error) << "Unsupported Pixel Format."sv;
