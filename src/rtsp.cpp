@@ -28,6 +28,7 @@ extern "C" {
 #include "logging.h"
 #include "network.h"
 #include "rtsp.h"
+#include "usb_stream_tunnel.h"
 #include "stream.h"
 #include "sync.h"
 #include "video.h"
@@ -1040,6 +1041,7 @@ namespace rtsp_stream {
       port = net::map_port(stream::AUDIO_STREAM_PORT);
     } else if (type == "video"sv) {
       port = net::map_port(stream::VIDEO_STREAM_PORT);
+      session.usb_video_setup = true;
     } else if (type == "control"sv) {
       port = net::map_port(stream::CONTROL_PORT);
     } else {
@@ -1129,8 +1131,12 @@ namespace rtsp_stream {
         auto name = line.substr(2, pos - 2);
         auto val = line.substr(pos + 1);
 
-        if (val[val.size() - 1] == ' ') {
+        if (!val.empty() && val.back() == ' ') {
           val = val.substr(0, val.size() - 1);
+        }
+        if (name == "x-ml-video.usbStreamVersion"sv && args.contains(name)) {
+          respond(sock, session, &option, 400, "Duplicate USB transport version", req->sequenceNumber, {});
+          return;
         }
         args.emplace(name, val);
       }
@@ -1321,6 +1327,16 @@ namespace rtsp_stream {
       return;
     }
 
+    const auto usb_video = args.find("x-ml-video.usbStreamVersion"sv);
+    if (session.direct_usb_video || usb_video != args.end()) {
+      if (!session.direct_usb_video || !session.direct_usb_video->active() ||
+          usb_video == args.end() || usb_video->second != "1" || !session.usb_video_setup ||
+          config.packetsize <= 0 || config.packetsize > 65000) {
+        respond(sock, session, &option, 461, "Direct USB Video Unavailable", req->sequenceNumber, {});
+        return;
+      }
+    }
+
     auto stream_session = stream::session::alloc(config, session);
     server->insert(stream_session);
 
@@ -1332,6 +1348,12 @@ namespace rtsp_stream {
       return;
     }
 
+    OPTION_ITEM usb_video_option {};
+    if (session.direct_usb_video) {
+      usb_video_option.option = const_cast<char *>("X-SS-USB-Video-Version");
+      usb_video_option.content = const_cast<char *>("1");
+      option.next = &usb_video_option;
+    }
     respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
   }
 

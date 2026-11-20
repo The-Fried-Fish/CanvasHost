@@ -38,6 +38,8 @@
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
+#include "usb_stream_tunnel.h"
+#include "stream.h"
 
 using namespace std::literals;
 
@@ -1325,6 +1327,38 @@ namespace nvhttp {
   }
 
   /**
+   * @brief Bind a single-use USB video token only after HTTPS client authentication.
+   * @param request Authenticated HTTPS launch or resume request.
+   * @param session Launch session receiving the claimed channel.
+   * @param tree Error response populated when the token or client is invalid.
+   * @return True when no USB token is supplied or binding succeeds.
+   */
+  bool bind_direct_usb_video(const req_https_t &request, rtsp_stream::launch_session_t &session, pt::ptree &tree) {
+    const auto [first, last] = request->header.equal_range(std::string(usb_stream_tunnel::video_launch_header));
+    if (first == last) {
+      return true;
+    }
+    auto certificate = crypto::x509(session.client_cert);
+    {
+      std::lock_guard lock {client_auth_mutex()};
+      if (!certificate || !is_client_enabled(certificate.get())) {
+        tree.put("root.<xmlattr>.status_code", 403);
+        tree.put("root.<xmlattr>.status_message", "Direct USB video requires an enabled paired client");
+        return false;
+      }
+    }
+    if (std::next(first) == last) {
+      session.direct_usb_video = usb_stream_tunnel::claim_video(first->second);
+    }
+    if (!session.direct_usb_video) {
+      tree.put("root.<xmlattr>.status_code", 400);
+      tree.put("root.<xmlattr>.status_message", "Direct USB video token is invalid, expired or already used");
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * @brief Launch the requested application for a GameStream session.
    *
    * @param host_audio Host audio.
@@ -1379,6 +1413,10 @@ namespace nvhttp {
 
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
+    if (!bind_direct_usb_video(request, *launch_session, tree)) {
+      tree.put("root.gamesession", 0);
+      return;
+    }
 
     if (rtsp_stream::session_count() == 0) {
       // The display should be restored in case something fails as there are no other sessions.
@@ -1497,6 +1535,10 @@ namespace nvhttp {
       host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     }
     const auto launch_session = make_launch_session(host_audio, args);
+    if (!bind_direct_usb_video(request, *launch_session, tree)) {
+      tree.put("root.resume", 0);
+      return;
+    }
 
     if (no_active_sessions) {
       // We want to prepare display only if there are no active sessions at
@@ -1744,10 +1786,28 @@ namespace nvhttp {
     };
     std::jthread ssl {accept_and_run, &https_server};
     std::jthread tcp {accept_and_run, &http_server};
+#ifdef __APPLE__
+    auto tunnel_address = net::get_bind_address(address_family);
+    if (tunnel_address.empty() || tunnel_address == "0.0.0.0") {
+      tunnel_address = "127.0.0.1";
+    } else if (tunnel_address == "::") {
+      tunnel_address = "::1";
+    }
+    std::jthread usb_worker {[&](std::stop_token stop) {
+      usb_stream_tunnel::run(stop, http::unique_id, config::nvhttp.sunshine_name, tunnel_address,
+                            {port_http, port_https, net::map_port(rtsp_stream::RTSP_SETUP_PORT),
+                             net::map_port(stream::VIDEO_STREAM_PORT), net::map_port(stream::CONTROL_PORT),
+                             net::map_port(stream::AUDIO_STREAM_PORT), net::map_port(12)},
+                            [] { return uuid_util::uuid_t::generate().string(); });
+    }};
+#endif
 
     // Wait for any event
     shutdown_event->view();
 
+#ifdef __APPLE__
+    usb_worker.request_stop();
+#endif
     https_server.stop();
     http_server.stop();
 

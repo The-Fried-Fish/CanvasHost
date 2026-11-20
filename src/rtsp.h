@@ -11,6 +11,10 @@
 #include "crypto.h"
 #include "thread_safe.h"
 
+namespace usb_stream_tunnel {
+  class video_channel;
+}
+
 namespace rtsp_stream {
   constexpr auto RTSP_SETUP_PORT = 21;  ///< GameStream base-port offset used for the RTSP setup listener.
 
@@ -44,6 +48,8 @@ namespace rtsp_stream {
     std::string rtsp_url_scheme;  ///< URL scheme selected by the RTSP SETUP flow.
     uint32_t rtsp_iv_counter;  ///< Counter value mixed into encrypted RTSP IVs.
     std::string client_cert;  ///< PEM certificate for the paired Moonlight client.
+    std::shared_ptr<usb_stream_tunnel::video_channel> direct_usb_video;  ///< Authenticated USB video writer.
+    bool usb_video_setup = false;  ///< Whether this launch received video SETUP before ANNOUNCE.
   };
 
   /**
