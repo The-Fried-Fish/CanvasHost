@@ -8,10 +8,14 @@ if (NOT SUNSHINE_BUILD_HOMEBREW)
     set(SUNSHINE_ASSETS_DIR_DEF "../Resources/assets")
 endif()
 
-set(MACOS_LINK_DIRECTORIES
-        /opt/homebrew/lib
-        /opt/local/lib
-        /usr/local/lib)
+if(SUNSHINE_MACOS_DEPS)
+    set(MACOS_LINK_DIRECTORIES "${SUNSHINE_MACOS_DEPS}/lib")
+else()
+    set(MACOS_LINK_DIRECTORIES
+            /opt/homebrew/lib
+            /opt/local/lib
+            /usr/local/lib)
+endif()
 
 foreach(dir ${MACOS_LINK_DIRECTORIES})
     if(EXISTS ${dir})
@@ -44,6 +48,10 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
 set(APPLE_PLIST_TEMPLATE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/Info.plist.in")
 set(APPLE_PLIST_FILE "${CMAKE_BINARY_DIR}/Info.plist")
 set(APPLE_ENTITLEMENTS_FILE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/entitlements.plist")
+set(SUNSHINE_MACOS_MINIMUM_OS "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+if(NOT SUNSHINE_MACOS_MINIMUM_OS)
+    set(SUNSHINE_MACOS_MINIMUM_OS "14.4")
+endif()
 configure_file("${APPLE_PLIST_TEMPLATE}" "${APPLE_PLIST_FILE}" @ONLY)
 
 set(PLATFORM_TARGET_FILES

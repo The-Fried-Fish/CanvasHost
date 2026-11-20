@@ -82,7 +82,11 @@ qt6_deploy_runtime_dependencies(
           endif()
         endfunction()
 
-        fixup_bundle(\"\${_app}\" \"\" \"\")
+        set(_bundle_plugins \"\")
+        if(NOT \"${SUNSHINE_MACOS_DEPS}\" STREQUAL \"\")
+            file(GLOB_RECURSE _bundle_plugins \"\${_app}/Contents/PlugIns/*.dylib\")
+        endif()
+        fixup_bundle(\"\${_app}\" \"\${_bundle_plugins}\" \"\")
 
         # The bundle target's POST_BUILD step snapshots CMAKE_BINARY_DIR/assets into the bundle, so
         # the installed bundle has two writers for Contents/Resources/assets/web: this snapshot and
@@ -97,6 +101,16 @@ qt6_deploy_runtime_dependencies(
         # the sealed bytes and the packaged bytes are always the same content.
         file(COPY \"${CMAKE_CURRENT_BINARY_DIR}/assets/web/\"
              DESTINATION \"\${_app}/Contents/Resources/assets/web\")
+
+        if(NOT \"${SUNSHINE_MACOS_DEPS}\" STREQUAL \"\")
+            execute_process(COMMAND /usr/bin/python3
+                \"${PROJECT_SOURCE_DIR}/scripts/macos-deps/audit.py\" \"\${_app}\"
+                --target \"${CMAKE_OSX_DEPLOYMENT_TARGET}\" --arch \"${CMAKE_OSX_ARCHITECTURES}\"
+                RESULT_VARIABLE audit_rc)
+            if(NOT audit_rc EQUAL 0)
+                message(FATAL_ERROR \"macOS compatibility audit failed\")
+            endif()
+        endif()
 
         # Remove Finder/resource-fork metadata that breaks codesign.
         execute_process(COMMAND /usr/bin/xattr -rc \"\${_app}\")

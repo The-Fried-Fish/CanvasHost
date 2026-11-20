@@ -1,0 +1,45 @@
+{
+  "deployment_target": "14.4",
+  "sources": {
+    "openssl": {
+      "url": "https://www.openssl.org/source/openssl-3.5.9.tar.gz",
+      "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+    },
+    "opus": {
+      "url": "https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz",
+      "sha256": "65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
+    },
+    "miniupnpc": {
+      "url": "https://miniupnp.tuxfamily.org/files/miniupnpc-2.3.3.tar.gz",
+      "sha256": "d52a0afa614ad6c088cc9ddff1ae7d29c8c595ac5fdd321170a05f41e634bd1a"
+    },
+    "boost": {
+      "url": "https://github.com/boostorg/boost/releases/download/boost-1.89.0/boost-1.89.0-cmake.tar.xz",
+      "sha256": "67acec02d0d118b5de9eb441f5fb707b3a1cdd884be00ca24b9a73c995511f74"
+    },
+    "qtbase": {
+      "url": "https://download.qt.io/archive/qt/6.12/6.12.0/submodules/qtbase-everywhere-src-6.12.0.tar.xz",
+      "sha256": "a951bd163c7b80fc6b8c88d7668fb56abf91c152373e13c10666763238131307"
+    },
+    "qtsvg": {
+      "url": "https://download.qt.io/archive/qt/6.12/6.12.0/submodules/qtsvg-everywhere-src-6.12.0.tar.xz",
+      "sha256": "e4ab39534ec97987b1b9b60ef7f4d3253d5912a69f8c713a01753174a4029331"
+    },
+    "CVE-2026-105924-qtbase-6.12.diff": {
+      "url": "https://download.qt.io/archive/qt/6.12/CVE-2026-105924-qtbase-6.12.diff",
+      "sha256": "c27d27b86aaf2cdab0c18d513fbb94a432e98782eddfc5f856387e4be68be50b"
+    },
+    "CVE-2026-105943-qtbase-6.12.diff": {
+      "url": "https://download.qt.io/archive/qt/6.12/CVE-2026-105943-qtbase-6.12.diff",
+      "sha256": "dd22629ce948cf0a900421323cca331907180242a9b51c3fd75b25c75f068099"
+    },
+    "CVE-2026-116337-qtbase-6.12-0001.diff": {
+      "url": "https://download.qt.io/archive/qt/6.12/CVE-2026-116337-qtbase-6.12-0001.diff",
+      "sha256": "74c5028985dcc0455255909de4dc80f50cf5472dbf465ce46ebc791a7b080f12"
+    },
+    "CVE-2026-116337-qtbase-6.12-0002.diff": {
+      "url": "https://download.qt.io/archive/qt/6.12/CVE-2026-116337-qtbase-6.12-0002.diff",
+      "sha256": "83abc89d507dbd9a94dc5718b0125492c1c37b0609a8f404a1f164925940faec"
+    }
+  }
+}

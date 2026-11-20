@@ -12,12 +12,17 @@
 # that tag's submodule gitlink, and the SHA-256 of the produced archive.
 #
 # Usage: third-party/ffmpeg-patches/build-bundle.sh
-# Overrides: BUILD_DEPS_TAG, FFMPEG_COMMIT, ARCHIVE, WORK, JOBS
+# Overrides: BUILD_DEPS_TAG, FFMPEG_COMMIT, ARCHIVE, BASE_SHA256, SOURCE_SHA256, WORK, JOBS
 set -euo pipefail
+
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.4}"
+export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 
 BUILD_DEPS_TAG="${BUILD_DEPS_TAG:-v2026.910.121303}"
 FFMPEG_COMMIT="${FFMPEG_COMMIT:-bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa}"
 ARCHIVE="${ARCHIVE:-Darwin-arm64-ffmpeg.tar.gz}"
+BASE_SHA256="${BASE_SHA256:-dac277b307498011e747019941e794514b2824ef73a574fec33f0cf85fbcd291}"
+SOURCE_SHA256="${SOURCE_SHA256:-fb1931fd4eb29297ee1c1017a24f800c4d8fbea35b4f2aaeb28308a48a9149b4}"
 WORK="${WORK:-$HOME/Scripts/Lumen/deps/lumen-ffmpeg-bundle}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
@@ -38,6 +43,7 @@ if [ ! -f archive.tar.gz ]; then
   curl -fL -o archive.tar.gz \
     "https://github.com/LizardByte/build-deps/releases/download/${BUILD_DEPS_TAG}/${ARCHIVE}"
 fi
+echo "${BASE_SHA256}  archive.tar.gz" | shasum -a 256 -c -
 rm -rf bundle && mkdir bundle
 tar xzf archive.tar.gz -C bundle
 base="${WORK}/bundle/ffmpeg"
@@ -48,11 +54,13 @@ if [ ! -d src ]; then
   tar xzf src.tar.gz -C src --strip-components=1
 fi
 
+echo "${SOURCE_SHA256}  src.tar.gz" | shasum -a 256 -c -
+
 for patch_file in "${repo_root}"/third-party/ffmpeg-patches/build-deps/patches/FFmpeg/FFmpeg/videotoolbox/*.patch; do
-  if patch --dry-run -R -p1 -d src -i "${patch_file}" >/dev/null 2>&1; then
+  if patch -f --dry-run -R -p1 -d src -i "${patch_file}" >/dev/null 2>&1; then
     echo "patch already applied: ${patch_file}"
   else
-    patch -p1 -d src -i "${patch_file}"
+    patch -f -p1 -d src -i "${patch_file}"
   fi
 done
 
@@ -80,17 +88,19 @@ Libs.private: -lm -lpthread
 EOF
 fi
 
-export PKG_CONFIG_PATH="${base}/lib/pkgconfig"
+export PKG_CONFIG_PATH=""
+export PKG_CONFIG_LIBDIR="${base}/lib/pkgconfig"
 
 (
   cd src
+  if [ -f ffbuild/config.mak ]; then make distclean; fi
   ./configure \
     --prefix="${base}" \
     --cc=/usr/bin/clang --cxx=/usr/bin/clang++ --ar=/usr/bin/ar --ranlib=/usr/bin/ranlib \
     --pkg-config=/opt/homebrew/bin/pkg-config \
     --pkg-config-flags=--static \
-    --extra-cflags="-I${base}/include" \
-    --extra-ldflags="-L${base}/lib" \
+    --extra-cflags="-I${base}/include -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET} -isysroot ${SDKROOT}" \
+    --extra-ldflags="-L${base}/lib -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET} -isysroot ${SDKROOT}" \
     --extra-libs=-lpthread \
     --disable-all \
     --disable-autodetect \
@@ -143,6 +153,8 @@ base:        https://github.com/LizardByte/build-deps/releases/download/${BUILD_
 ffmpeg:      ${FFMPEG_COMMIT}
 patches:     third-party/ffmpeg-patches/build-deps/patches/FFmpeg/FFmpeg/videotoolbox/*.patch
 built:       $(sw_vers -productVersion 2>/dev/null || echo unknown) / $(uname -m) / $(/usr/bin/clang --version | head -1)
+minimum-os:  ${MACOSX_DEPLOYMENT_TARGET}
+sdk:         ${SDKROOT}
 configured:  as recorded in the published libavutil.a, CI paths replaced by the base bundle
 verify:      frame_drain present; x264/x265/SVT-AV1 encoder symbols present
 EOF
